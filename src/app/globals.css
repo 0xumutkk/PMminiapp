@@ -1,0 +1,230 @@
+:root {
+  --bg: #05070f;
+  --bg-accent: #0d1430;
+  --panel: #111a3a;
+  --text: #f2f4ff;
+  --muted: #a8b0d4;
+  --up: #4ce0a1;
+  --down: #ff6f91;
+  --border: #25305b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: radial-gradient(120% 120% at 20% 0%, var(--bg-accent) 0%, var(--bg) 50%);
+  color: var(--text);
+  font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.page {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.topbar {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  backdrop-filter: blur(10px);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(5, 7, 15, 0.8);
+}
+
+.eyebrow {
+  font-size: 12px;
+  margin: 0;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+h1 {
+  margin: 4px 0 0;
+  font-size: 20px;
+}
+
+.wallet-status {
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(17, 26, 58, 0.6);
+}
+
+.wallet-connect-btn {
+  font-size: 12px;
+  color: var(--text);
+  border: 1px solid #3853c4;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #1b2f79 0%, #122251 100%);
+  cursor: pointer;
+}
+
+.wallet-connect-btn:hover {
+  filter: brightness(1.08);
+}
+
+.feed {
+  height: calc(100dvh - 74px);
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+}
+
+.feed-card-slot {
+  scroll-snap-align: start;
+}
+
+.feed-card {
+  height: 100%;
+  min-height: 0;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  align-content: center;
+  padding: 20px 16px 28px;
+  gap: 16px;
+}
+
+.feed-card__status {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.feed-card__title {
+  margin: 0;
+  font-size: clamp(22px, 6vw, 34px);
+  line-height: 1.1;
+}
+
+.feed-card__meta {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.feed-card__price {
+  display: grid;
+  gap: 10px;
+}
+
+.price-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  border: 1px solid var(--border);
+  background: rgba(17, 26, 58, 0.7);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.price-label {
+  color: var(--muted);
+}
+
+.price-value--up {
+  color: var(--up);
+}
+
+.price-value--down {
+  color: var(--down);
+}
+
+.trade-box {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(9, 16, 40, 0.66);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.trade-box__label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.trade-box__input {
+  width: 100%;
+  border: 1px solid #304179;
+  background: #0a1230;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.trade-box__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.trade-btn {
+  border-radius: 10px;
+  border: 1px solid transparent;
+  padding: 10px 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.trade-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.trade-btn--yes {
+  background: linear-gradient(180deg, #1f5f44 0%, #16372a 100%);
+  border-color: #2d8b63;
+  color: #d9ffef;
+}
+
+.trade-btn--no {
+  background: linear-gradient(180deg, #7d213a 0%, #451226 100%);
+  border-color: #c54b6f;
+  color: #ffe4ec;
+}
+
+.trade-box__status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.trade-box__status--confirmed {
+  color: var(--up);
+}
+
+.trade-box__status--failed {
+  color: var(--down);
+}
+
+.feed-loading,
+.feed-error,
+.feed-empty {
+  min-height: calc(100dvh - 74px);
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  padding: 16px;
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  .feed-card {
+    padding-inline: 12vw;
+  }
+}

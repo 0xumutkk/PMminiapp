@@ -6,13 +6,13 @@ export function MiniAppContextBadge() {
   const { context, loaded, inMiniAppHost } = useMiniAppContext();
 
   if (!loaded) {
-    return <p className="miniapp-badge">Host: detecting...</p>;
+    return <p className="miniapp-badge">Detecting host...</p>;
   }
 
   if (!inMiniAppHost) {
-    return <p className="miniapp-badge">Host: web browser</p>;
+    return <p className="miniapp-badge">Web preview</p>;
   }
 
-  const name = context?.user?.displayName ?? context?.user?.username ?? "Base App user";
-  return <p className="miniapp-badge">Host: Base App · {name}</p>;
+  const name = context?.user?.username ?? context?.user?.displayName ?? "Base user";
+  return <p className="miniapp-badge">Base App · @{name}</p>;
 }

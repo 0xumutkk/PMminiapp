@@ -4,6 +4,7 @@ import { getRequestId } from "@/lib/security/request-context";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/security/rate-limit";
 
 export const runtime = "nodejs";
+const LIMITLESS_SOURCE = "markets/active";
 
 function sanitizeHeaderValue(value: string) {
   return value.replace(/[^\t\x20-\x7E]+/g, " ").trim().slice(0, 200);
@@ -31,7 +32,8 @@ export async function GET(request: Request) {
         status: 429,
         headers: {
           ...rateHeaders,
-          "Cache-Control": "no-store"
+          "Cache-Control": "no-store",
+          "X-Limitless-Source": LIMITLESS_SOURCE
         }
       }
     );
@@ -52,6 +54,7 @@ export async function GET(request: Request) {
         ...rateHeaders,
         "Cache-Control": "no-store",
         "X-Market-Count": String(payload.markets.length),
+        "X-Limitless-Source": LIMITLESS_SOURCE,
         "X-Request-Id": requestId,
         ...(indexerError ? { "X-Indexer-Error": sanitizeHeaderValue(indexerError) } : {})
       }
@@ -72,6 +75,7 @@ export async function GET(request: Request) {
         ...rateHeaders,
         "Cache-Control": "no-store",
         "X-Market-Count": String(payload.markets.length),
+        "X-Limitless-Source": LIMITLESS_SOURCE,
         "X-Route-Recovered": "true",
         "X-Route-Error": sanitizeHeaderValue(errorMessage),
         "X-Request-Id": requestId

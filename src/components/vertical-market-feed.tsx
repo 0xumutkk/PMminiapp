@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent, type WheelEvent } from "react";
 import { MarketSnapshot } from "@/lib/market-types";
 import { MarketCard } from "@/components/market-card";
 
@@ -11,6 +11,9 @@ type FeedState = {
 };
 
 const WINDOW_RADIUS = 2;
+const SWIPE_THRESHOLD_PX = 54;
+const WHEEL_THRESHOLD = 36;
+const NAV_LOCK_MS = 260;
 
 function sortSnapshot(snapshot: MarketSnapshot): MarketSnapshot {
   return {
@@ -36,6 +39,9 @@ export function VerticalMarketFeed() {
 
   const containerRef = useRef<HTMLElement | null>(null);
   const elementMapRef = useRef<Map<number, HTMLElement>>(new Map());
+  const touchStartYRef = useRef<number | null>(null);
+  const touchStartScrollTopRef = useRef(0);
+  const wheelLockedRef = useRef(false);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -187,6 +193,96 @@ export function VerticalMarketFeed() {
     }
   }, [itemHeight, markets.length]);
 
+  const scrollToIndex = useCallback(
+    (nextIndex: number, behavior: ScrollBehavior = "smooth") => {
+      const container = containerRef.current;
+      if (!container || markets.length === 0) {
+        return;
+      }
+
+      const clampedIndex = Math.max(0, Math.min(markets.length - 1, nextIndex));
+      container.scrollTo({
+        top: clampedIndex * itemHeight,
+        behavior
+      });
+      setActiveIndex(clampedIndex);
+    },
+    [itemHeight, markets.length]
+  );
+
+  const navigateByDirection = useCallback(
+    (direction: -1 | 1) => {
+      scrollToIndex(activeIndex + direction);
+    },
+    [activeIndex, scrollToIndex]
+  );
+
+  const handleTouchStartCapture = useCallback((event: TouchEvent<HTMLElement>) => {
+    const point = event.touches[0];
+    touchStartYRef.current = point ? point.clientY : null;
+    touchStartScrollTopRef.current = containerRef.current?.scrollTop ?? 0;
+  }, []);
+
+  const handleTouchEndCapture = useCallback(
+    (event: TouchEvent<HTMLElement>) => {
+      const startY = touchStartYRef.current;
+      touchStartYRef.current = null;
+      if (startY === null) {
+        return;
+      }
+
+      const point = event.changedTouches[0];
+      if (!point) {
+        return;
+      }
+
+      const deltaY = point.clientY - startY;
+      if (Math.abs(deltaY) < SWIPE_THRESHOLD_PX) {
+        return;
+      }
+
+      const movedByNativeScroll = Math.abs((containerRef.current?.scrollTop ?? 0) - touchStartScrollTopRef.current);
+      if (movedByNativeScroll > itemHeight * 0.2) {
+        return;
+      }
+
+      navigateByDirection(deltaY < 0 ? 1 : -1);
+    },
+    [itemHeight, navigateByDirection]
+  );
+
+  const handleWheel = useCallback(
+    (event: WheelEvent<HTMLElement>) => {
+      if (Math.abs(event.deltaY) < WHEEL_THRESHOLD) {
+        return;
+      }
+
+      if (wheelLockedRef.current) {
+        event.preventDefault();
+        return;
+      }
+
+      wheelLockedRef.current = true;
+      event.preventDefault();
+
+      navigateByDirection(event.deltaY > 0 ? 1 : -1);
+
+      window.setTimeout(() => {
+        wheelLockedRef.current = false;
+      }, NAV_LOCK_MS);
+    },
+    [navigateByDirection]
+  );
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    container.scrollTo({ top: activeIndex * itemHeight, behavior: "auto" });
+  }, [activeIndex, itemHeight]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) {
@@ -251,7 +347,15 @@ export function VerticalMarketFeed() {
   }
 
   return (
-    <section className="feed" aria-live="polite" ref={containerRef} onScroll={handleScroll}>
+    <section
+      className="feed"
+      aria-live="polite"
+      ref={containerRef}
+      onScroll={handleScroll}
+      onTouchStartCapture={handleTouchStartCapture}
+      onTouchEndCapture={handleTouchEndCapture}
+      onWheel={handleWheel}
+    >
       <div aria-hidden style={{ height: topPad }} />
 
       {visibleMarkets.map((market, offset) => {

@@ -13,7 +13,7 @@ export function WalletStatus() {
   const { connect, connectors, isPending } = useConnect();
 
   if (isPending) {
-    return <p className="wallet-status">Wallet: connecting...</p>;
+    return <p className="wallet-status">Connecting wallet...</p>;
   }
 
   if (!isConnected || !address) {
@@ -23,20 +23,17 @@ export function WalletStatus() {
       connectors[0];
 
     if (!defaultConnector) {
-      return <p className="wallet-status">Wallet: unavailable</p>;
+      return <p className="wallet-status">Wallet unavailable</p>;
     }
 
     return (
-      <div className="wallet-status-group">
-        <p className="wallet-status">Wallet: not connected</p>
-        <button
-          className="wallet-connect-btn"
-          onClick={() => connect({ connector: defaultConnector })}
-          type="button"
-        >
-          Connect
-        </button>
-      </div>
+      <button
+        className="wallet-connect-btn"
+        onClick={() => connect({ connector: defaultConnector })}
+        type="button"
+      >
+        Connect Wallet
+      </button>
     );
   }
 

@@ -2,15 +2,12 @@
 
 import { useAccount, useChainId, useConnect } from "wagmi";
 import { base } from "wagmi/chains";
-import { useAutoConnectWallet } from "@/lib/use-auto-connect-wallet";
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 export function WalletStatus() {
-  useAutoConnectWallet();
-
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { connect, connectors, isPending } = useConnect();
@@ -30,13 +27,16 @@ export function WalletStatus() {
     }
 
     return (
-      <button
-        className="wallet-connect-btn"
-        onClick={() => connect({ connector: defaultConnector })}
-        type="button"
-      >
-        Connect wallet
-      </button>
+      <div className="wallet-status-group">
+        <p className="wallet-status">Wallet: not connected</p>
+        <button
+          className="wallet-connect-btn"
+          onClick={() => connect({ connector: defaultConnector })}
+          type="button"
+        >
+          Connect
+        </button>
+      </div>
     );
   }
 

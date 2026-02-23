@@ -1,24 +1,26 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useMiniKit } from "@coinbase/onchainkit/minikit";
 
-export function useFarcasterReady() {
+export function useMiniAppReady() {
+  const { setMiniAppReady } = useMiniKit();
+  const attemptedRef = useRef(false);
+
   useEffect(() => {
-    let cancelled = false;
+    if (attemptedRef.current) {
+      return;
+    }
 
+    attemptedRef.current = true;
     void (async () => {
       try {
-        const { sdk } = await import("@farcaster/frame-sdk");
-        if (!cancelled) {
-          await sdk.actions.ready();
-        }
+        await setMiniAppReady();
       } catch {
         // Safe fallback: app can still run in a standard browser.
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  }, [setMiniAppReady]);
 }
+
+export const useFarcasterReady = useMiniAppReady;

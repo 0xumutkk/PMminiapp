@@ -1,63 +1,60 @@
-# Pulse Markets Mini App (Phase 1 + 2)
+# Pulse Markets Base Mini App
 
-This repository implements phases 1 through 5 from your architecture document:
+This repository implements a Base Mini App with live Limitless markets and onchain trade intents on Base.
 
-- Phase 1: Farcaster Mini App foundation (manifest, frame readiness, Base wallet connector)
-- Phase 2: Market data plane (Limitless polling, point-budget protection, Redis cache, realtime SSE)
-- Phase 3: Transaction layer (approve + trade batching with EIP-5792 path and sequential fallback)
-- Phase 4: Vertical feed performance layer (virtualized window + IntersectionObserver)
-- Phase 5: Launch security layer (API rate limiting, beta allowlist gating, health/observability)
+## Scope
 
-## What is implemented
-
-1. Farcaster Mini App foundation
-- Dynamic manifest at `/.well-known/farcaster.json`
-- Account association values read from environment
-- Frame SDK boot (`sdk.actions.ready()`)
-- Wagmi config on Base with `@farcaster/frame-wagmi-connector`
-- Auto wallet connect behavior
+1. Base Mini App foundation
+- Manifest route at `/.well-known/farcaster.json` with `miniapp` + `frame` compatibility keys
+- Account association from `FARCASTER_ACCOUNT_ASSOCIATION_JSON`
+- MiniKit handshake via `useMiniKit().setMiniAppReady()`
+- OnchainKit provider with MiniKit enabled and Base chain wiring
+- Read-only first load (no auto-connect)
 
 2. Market data plane
-- Limitless public API client with rolling point budgets:
-  - 500 points / 10 seconds
-  - 1500 points / minute
-- Polling indexer service (`LIMITLESS_POLL_INTERVAL_MS`)
-- Redis cache (`REDIS_URL`) with in-memory fallback
-- Snapshot endpoint: `GET /api/markets`
-- Realtime stream endpoint (SSE): `GET /api/markets/stream`
-- Wallet connect fallback button for non-Farcaster browser testing
+- Limitless API v1 polling (`GET /markets/active`) with point-budget protection
+- Redis-backed snapshot cache with in-memory fallback
+- `GET /api/markets` snapshot endpoint
+- `GET /api/markets/stream` SSE realtime updates
 
-3. Transaction layer
-- Trade intent endpoint: `POST /api/trade/intent`
-- Server-generated call bundle (`approve` + `trade`) using configurable function signature
-- Trade contract address resolved dynamically from market payload (`tradeVenue.venueExchange`)
-- Client executes with `useSendCalls` (single signature) and falls back to sequential txs if wallet lacks EIP-5792
+3. Onchain trade intent
+- `POST /api/trade/intent` returns approve + trade calls
+- Market venue metadata used first
+- Env fallback support:
+  - `USDC_TOKEN_ADDRESS`
+  - `LIMITLESS_TRADE_CONTRACT_ADDRESS`
+  - `LIMITLESS_TRADE_FUNCTION_SIGNATURE`
+  - `LIMITLESS_TRADE_ARG_MAP`
 
-4. Feed performance layer
-- Virtualized rendering window around active card (reduces DOM size in WebView)
-- `IntersectionObserver` driven active-card detection
-- Visibility-aware SSE behavior (stream disconnects in hidden tab and reconnects on resume)
+4. Feed performance and reliability
+- Vertical virtualized market feed
+- Visibility-aware stream connect/disconnect
+- Route-level graceful recovery for upstream failures
 
-5. Security/launch layer
-- API rate limiting on markets, stream, and trade intent routes
-- Optional beta allowlist (`BETA_MODE=true`)
-- Health endpoint: `GET /api/health`
-- Structured server logs for degraded/recovered states
+5. Launch security
+- API rate limiting for markets, stream, trade intent
+- Optional beta allowlist mode
+- `GET /api/health` status endpoint
 
 ## Environment
 
-Copy `.env.example` into `.env.local` and fill values.
+Copy `.env.example` to `.env.local` and fill production values.
 
-Required for Mini App deployment:
+Required:
 - `NEXT_PUBLIC_MINI_APP_URL`
 - `FARCASTER_ACCOUNT_ASSOCIATION_JSON`
 
 Recommended:
 - `REDIS_URL`
 - `LIMITLESS_API_BASE_URL`
-- `LIMITLESS_TRADE_FUNCTION_SIGNATURE` (only as fallback override)
+- `NEXT_PUBLIC_ONCHAINKIT_API_KEY`
 
-## Run locally
+If market metadata is incomplete, set:
+- `LIMITLESS_TRADE_CONTRACT_ADDRESS`
+- `LIMITLESS_TRADE_FUNCTION_SIGNATURE`
+- `LIMITLESS_TRADE_ARG_MAP`
+
+## Run
 
 ```bash
 npm install
@@ -70,7 +67,7 @@ Optional Redis:
 docker compose up -d redis
 ```
 
-Optional dedicated indexer worker process:
+Optional worker:
 
 ```bash
 npm run worker
@@ -79,17 +76,10 @@ npm run worker
 ## Key files
 
 - `src/app/.well-known/farcaster.json/route.ts`
-- `src/lib/wagmi.ts`
+- `src/components/providers.tsx`
 - `src/lib/use-farcaster-ready.ts`
-- `src/lib/limitless-client.ts`
-- `src/lib/rate-budget.ts`
-- `src/lib/cache.ts`
-- `src/lib/indexer.ts`
+- `src/lib/use-miniapp-context.ts`
+- `src/components/vertical-market-feed.tsx`
 - `src/app/api/markets/route.ts`
 - `src/app/api/markets/stream/route.ts`
-- `src/components/vertical-market-feed.tsx`
 - `src/app/api/trade/intent/route.ts`
-- `src/lib/trade/use-trade-executor.ts`
-- `src/lib/trade/build-intent.ts`
-- `src/app/api/health/route.ts`
-- `src/lib/security/rate-limit.ts`

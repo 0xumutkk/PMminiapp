@@ -2,14 +2,14 @@ import { Market, MarketSnapshot } from "@/lib/market-types";
 import { MultiWindowPointBudget } from "@/lib/rate-budget";
 import { isAddress } from "viem";
 
-type JsonRecord = Record<string, unknown>;
-
 type LimitlessClient = {
   fetchActiveMarkets: () => Promise<MarketSnapshot>;
 };
 
 const REQUEST_TIMEOUT_MS = 8_000;
-const MAX_RECORDS_TO_SCAN = 2000;
+const MAX_MARKETS = 120;
+const MAX_PAGE_LIMIT = 25;
+const MAX_PAGE_FETCH = 8;
 
 function toNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -30,22 +30,42 @@ function toString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+type LimitlessVenue = {
+  exchange?: unknown;
+  adapter?: unknown;
+};
+
+type LimitlessCollateralToken = {
+  decimals?: unknown;
+};
+
+type LimitlessActiveMarketRow = {
+  id?: unknown;
+  slug?: unknown;
+  title?: unknown;
+  prices?: unknown;
+  status?: unknown;
+  expired?: unknown;
+  volumeFormatted?: unknown;
+  volume?: unknown;
+  expirationTimestamp?: unknown;
+  expirationDate?: unknown;
+  venue?: unknown;
+  collateralToken?: unknown;
+  markets?: unknown;
+};
+
+type LimitlessActiveMarketsResponse = {
+  data?: unknown;
+  totalMarketsCount?: unknown;
+};
+
 function clampProbability(value: number): number {
   if (value > 1) {
     return Math.max(0, Math.min(1, value / 100));
   }
 
   return Math.max(0, Math.min(1, value));
-}
-
-function pick(obj: JsonRecord, keys: string[]): unknown {
-  for (const key of keys) {
-    if (key in obj) {
-      return obj[key];
-    }
-  }
-
-  return undefined;
 }
 
 async function fetchWithTimeout(url: string) {
@@ -65,272 +85,214 @@ async function fetchWithTimeout(url: string) {
   }
 }
 
-function normalizeStatus(rawStatus: unknown): Market["status"] {
+function normalizeStatus(rawStatus: unknown, expired: unknown): Market["status"] {
+  if (expired === true) {
+    return "closed";
+  }
+
   const value = toString(rawStatus)?.toLowerCase();
-  if (value === "closed" || value === "resolved") {
-    return value;
+  if (value?.includes("resolved")) {
+    return "resolved";
+  }
+
+  if (value?.includes("closed")) {
+    return "closed";
   }
 
   return "open";
 }
 
-function objectValuesAsRecords(value: JsonRecord): JsonRecord[] {
-  return Object.values(value).filter((entry): entry is JsonRecord => {
-    return typeof entry === "object" && entry !== null && !Array.isArray(entry);
-  });
-}
-
-function extractRecords(payload: unknown): JsonRecord[] {
-  const records: JsonRecord[] = [];
-  const queue: unknown[] = [payload];
-
-  while (queue.length > 0 && records.length < MAX_RECORDS_TO_SCAN) {
-    const current = queue.shift();
-    if (!current) {
-      continue;
-    }
-
-    if (Array.isArray(current)) {
-      for (const item of current) {
-        queue.push(item);
-      }
-      continue;
-    }
-
-    if (typeof current !== "object") {
-      continue;
-    }
-
-    const obj = current as JsonRecord;
-
-    const nestedKeys = ["data", "result", "items", "rows", "markets", "pairs", "tickers", "payload"];
-    for (const key of nestedKeys) {
-      if (key in obj) {
-        queue.push(obj[key]);
-      }
-    }
-
-    const nestedObjects = objectValuesAsRecords(obj);
-    if (nestedObjects.length > 0 && nestedObjects.length <= 30) {
-      for (const nestedObject of nestedObjects) {
-        queue.push(nestedObject);
-      }
-    }
-
-    records.push(obj);
+function parsePrices(raw: unknown) {
+  if (!Array.isArray(raw) || raw.length < 2) {
+    return null;
   }
 
-  return records;
-}
-
-function hasMarketShape(row: JsonRecord) {
-  const signalKeys = [
-    "id",
-    "market_id",
-    "marketId",
-    "pair",
-    "symbol",
-    "slug",
-    "question",
-    "title",
-    "yesPrice",
-    "yes_price",
-    "price_yes",
-    "probability",
-    "outcomes"
-  ];
-
-  return signalKeys.some((key) => key in row);
-}
-
-function normalizeFromOutcomes(outcomes: unknown) {
-  if (!Array.isArray(outcomes)) {
-    return { yesPrice: undefined, noPrice: undefined };
+  const yes = toNumber(raw[0]);
+  const no = toNumber(raw[1]);
+  if (yes === undefined || no === undefined) {
+    return null;
   }
 
-  let yesPrice: number | undefined;
-  let noPrice: number | undefined;
-
-  for (const outcome of outcomes) {
-    if (typeof outcome !== "object" || outcome === null) {
-      continue;
-    }
-
-    const row = outcome as JsonRecord;
-    const name = toString(pick(row, ["name", "title", "label", "outcome"]))?.toLowerCase();
-    const priceRaw = toNumber(pick(row, ["price", "probability", "odds", "value"]));
-    if (priceRaw === undefined || !name) {
-      continue;
-    }
-
-    if (name.includes("yes") || name.includes("up") || name.includes("true")) {
-      yesPrice = clampProbability(priceRaw);
-    }
-
-    if (name.includes("no") || name.includes("down") || name.includes("false")) {
-      noPrice = clampProbability(priceRaw);
-    }
-  }
-
-  return { yesPrice, noPrice };
+  return {
+    yesPrice: clampProbability(yes),
+    noPrice: clampProbability(no)
+  };
 }
 
-function normalizeMarket(raw: JsonRecord): Market | null {
-  const id = toString(
-    pick(raw, ["id", "market_id", "marketId", "pair", "symbol", "slug", "market_slug", "ticker"])
-  );
+function parseEndsAt(row: LimitlessActiveMarketRow) {
+  const timestamp = toNumber(row.expirationTimestamp);
+  if (timestamp !== undefined) {
+    const millis = timestamp > 1_000_000_000_000 ? timestamp : timestamp * 1000;
+    return new Date(millis).toISOString();
+  }
 
-  const base = toString(pick(raw, ["base_currency", "base_symbol", "asset", "base"]));
-  const quote = toString(pick(raw, ["quote_currency", "quote_symbol", "quote"]));
+  const expirationDate = toString(row.expirationDate);
+  if (!expirationDate) {
+    return undefined;
+  }
 
-  const title =
-    toString(pick(raw, ["title", "question", "name", "market", "pair", "description", "headline"])) ??
-    (base && quote ? `${base}/${quote}` : undefined) ??
-    (id ? `Market ${id}` : undefined);
+  const parsed = Date.parse(expirationDate);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+}
 
+function parseVolume(row: LimitlessActiveMarketRow) {
+  const formatted = toNumber(row.volumeFormatted);
+  if (formatted !== undefined) {
+    return formatted;
+  }
+
+  const rawVolume = toNumber(row.volume);
+  if (rawVolume === undefined) {
+    return undefined;
+  }
+
+  const collateral = typeof row.collateralToken === "object" && row.collateralToken !== null
+    ? (row.collateralToken as LimitlessCollateralToken)
+    : undefined;
+  const decimals = toNumber(collateral?.decimals) ?? 6;
+  const scaled = rawVolume / 10 ** decimals;
+
+  return Number.isFinite(scaled) ? scaled : undefined;
+}
+
+function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
+  const prices = parsePrices(row.prices);
+  if (!prices) {
+    return null;
+  }
+
+  const id = toString(row.slug) ?? toString(row.id);
+  const title = toString(row.title);
   if (!id || !title) {
     return null;
   }
 
-  const derivedOutcomes = normalizeFromOutcomes(raw.outcomes);
-
-  const yesPriceRaw =
-    toNumber(
-      pick(raw, [
-        "yesPrice",
-        "yes_price",
-        "price_yes",
-        "p_yes",
-        "probability",
-        "prob",
-        "last_price"
-      ])
-    ) ?? derivedOutcomes.yesPrice;
-
-  const noPriceRaw =
-    toNumber(pick(raw, ["noPrice", "no_price", "price_no", "p_no"])) ?? derivedOutcomes.noPrice;
-
-  const yesPrice = yesPriceRaw !== undefined ? clampProbability(yesPriceRaw) : undefined;
-  const noPrice = noPriceRaw !== undefined ? clampProbability(noPriceRaw) : undefined;
-
-  const resolvedYes = yesPrice ?? (noPrice !== undefined ? clampProbability(1 - noPrice) : 0.5);
-  const resolvedNo = noPrice ?? clampProbability(1 - resolvedYes);
-
-  const venueRaw =
-    (typeof raw.venue === "object" && raw.venue !== null ? (raw.venue as JsonRecord) : undefined) ??
-    (typeof raw.execution_venue === "object" && raw.execution_venue !== null
-      ? (raw.execution_venue as JsonRecord)
-      : undefined);
-
-  const exchangeCandidate =
-    toString(
-      pick(raw, ["venue_exchange", "exchange", "exchange_address", "venueExchange", "trade_contract"])
-    ) ?? (venueRaw ? toString(pick(venueRaw, ["exchange", "exchange_address"])) : undefined);
-
-  const adapterCandidate =
-    toString(pick(raw, ["venue_adapter", "adapter", "adapter_address", "venueAdapter"])) ??
-    (venueRaw ? toString(pick(venueRaw, ["adapter", "adapter_address"])) : undefined);
-
-  const functionSignature =
-    toString(pick(raw, ["trade_function_signature", "execution_signature"])) ??
-    (venueRaw ? toString(pick(venueRaw, ["function_signature", "trade_function_signature"])) : undefined);
-
-  const argMap =
-    toString(pick(raw, ["trade_arg_map", "execution_arg_map"])) ??
-    (venueRaw ? toString(pick(venueRaw, ["arg_map", "trade_arg_map"])) : undefined);
+  const venue = typeof row.venue === "object" && row.venue !== null ? (row.venue as LimitlessVenue) : undefined;
+  const exchange = toString(venue?.exchange);
+  const adapter = toString(venue?.adapter);
 
   return {
     id,
     title,
-    yesPrice: resolvedYes,
-    noPrice: resolvedNo,
-    volume24h: toNumber(
-      pick(raw, ["volume24h", "volume_24h", "volume", "turnover_24h", "volumeUsd", "vol24h"])
-    ),
-    endsAt: toString(
-      pick(raw, ["endsAt", "ends_at", "end_time", "expiration", "expiresAt", "close_time", "resolve_time"])
-    ),
-    status: normalizeStatus(pick(raw, ["status", "state"])),
+    yesPrice: prices.yesPrice,
+    noPrice: prices.noPrice,
+    volume24h: parseVolume(row),
+    endsAt: parseEndsAt(row),
+    status: normalizeStatus(row.status, row.expired),
     tradeVenue: {
-      ...(exchangeCandidate && isAddress(exchangeCandidate) ? { venueExchange: exchangeCandidate } : {}),
-      ...(adapterCandidate && isAddress(adapterCandidate) ? { venueAdapter: adapterCandidate } : {}),
-      ...(functionSignature ? { functionSignature } : {}),
-      ...(argMap ? { argMap } : {})
+      ...(exchange && isAddress(exchange) ? { venueExchange: exchange } : {}),
+      ...(adapter && isAddress(adapter) ? { venueAdapter: adapter } : {})
     },
     source: "limitless"
   };
 }
 
-function dedupeMarkets(markets: Market[]) {
-  const map = new Map<string, Market>();
-  for (const market of markets) {
-    map.set(market.id, market);
-  }
+function flattenRows(rows: LimitlessActiveMarketRow[]): LimitlessActiveMarketRow[] {
+  const output: LimitlessActiveMarketRow[] = [];
 
-  return [...map.values()];
-}
+  for (const row of rows) {
+    const nested = Array.isArray(row.markets)
+      ? row.markets.filter(
+          (market): market is LimitlessActiveMarketRow =>
+            typeof market === "object" && market !== null
+        )
+      : [];
 
-function withSyntheticEndTimes(markets: Market[]) {
-  return markets.map((market, index) => {
-    if (market.endsAt) {
-      return market;
+    // Group rows may only hold metadata while nested rows contain tradable outcomes.
+    if (nested.length > 0 && !Array.isArray(row.prices)) {
+      output.push(...flattenRows(nested));
+      continue;
     }
 
-    const nextQuarterHourMs = 15 * 60 * 1000;
-    const endsAt = new Date(Date.now() + nextQuarterHourMs + index * 45_000).toISOString();
-    return { ...market, endsAt };
-  });
+    output.push(row);
+    if (nested.length > 0) {
+      output.push(...flattenRows(nested));
+    }
+  }
+
+  return output;
+}
+
+function normalizeBaseUrl(rawBaseUrl: string | undefined) {
+  const fallback = "https://api.limitless.exchange";
+  try {
+    const url = new URL(rawBaseUrl ?? fallback);
+    if (url.pathname.endsWith("/api-v1")) {
+      url.pathname = "/";
+    }
+
+    return url.origin;
+  } catch {
+    return fallback;
+  }
 }
 
 export function createLimitlessClient(): LimitlessClient {
-  const baseUrl = process.env.LIMITLESS_API_BASE_URL ?? "https://api.limitless.exchange";
+  const baseUrl = normalizeBaseUrl(process.env.LIMITLESS_API_BASE_URL);
   const budget = new MultiWindowPointBudget();
 
-  async function callPublic(method: string, query: Record<string, string> = {}, pointCost = 2) {
-    budget.consume(pointCost);
+  async function fetchActivePage(page: number, limit: number) {
+    budget.consume(2);
 
-    const url = new URL(`/public/${method}`, baseUrl);
-    for (const [key, value] of Object.entries(query)) {
-      url.searchParams.set(key, value);
-    }
+    const url = new URL("/markets/active", baseUrl);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("sortBy", "ending_soon");
+    url.searchParams.set("tradeType", "clob");
 
     const response = await fetchWithTimeout(url.toString());
     if (!response.ok) {
-      throw new Error(`Limitless API request failed: ${method} -> ${response.status}`);
+      throw new Error(`Limitless API request failed: markets/active -> ${response.status}`);
     }
 
-    return (await response.json()) as unknown;
-  }
-
-  async function fetchMarketRows() {
-    const candidates = ["markets", "pairs", "ticker"];
-
-    for (const method of candidates) {
-      try {
-        const payload = await callPublic(method);
-        const rows = extractRecords(payload).filter(hasMarketShape);
-        if (rows.length > 0) {
-          return rows;
-        }
-      } catch {
-        // Continue with fallbacks.
-      }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json")) {
+      throw new Error("Limitless API returned non-JSON response for markets/active");
     }
 
-    throw new Error("No market data returned from Limitless API public endpoints");
+    const payload = (await response.json()) as LimitlessActiveMarketsResponse;
+    if (!Array.isArray(payload.data)) {
+      throw new Error("Limitless API response missing data array");
+    }
+
+    return {
+      rows: payload.data.filter(
+        (entry): entry is LimitlessActiveMarketRow =>
+          typeof entry === "object" && entry !== null
+      ),
+      totalMarketsCount: toNumber(payload.totalMarketsCount) ?? payload.data.length
+    };
   }
 
   async function fetchActiveMarkets(): Promise<MarketSnapshot> {
-    const rows = await fetchMarketRows();
+    const pageLimit = Number(process.env.LIMITLESS_ACTIVE_PAGE_LIMIT ?? MAX_PAGE_LIMIT);
+    const limit = Math.min(MAX_PAGE_LIMIT, Math.max(1, Number.isFinite(pageLimit) ? pageLimit : MAX_PAGE_LIMIT));
 
-    const markets = withSyntheticEndTimes(
-      dedupeMarkets(
-        rows
-          .map(normalizeMarket)
-          .filter((market): market is Market => market !== null)
-          .filter((market) => market.status === "open")
-      )
-    ).slice(0, 120);
+    const firstPage = await fetchActivePage(1, limit);
+    const rows = [...firstPage.rows];
+
+    const expectedPages = Math.ceil(firstPage.totalMarketsCount / limit);
+    const pagesToFetch = Math.max(1, Math.min(MAX_PAGE_FETCH, expectedPages));
+
+    for (let page = 2; page <= pagesToFetch; page += 1) {
+      if (rows.length >= MAX_MARKETS) {
+        break;
+      }
+
+      const nextPage = await fetchActivePage(page, limit);
+      if (nextPage.rows.length === 0) {
+        break;
+      }
+
+      rows.push(...nextPage.rows);
+    }
+
+    const markets = dedupeMarkets(
+      flattenRows(rows)
+        .map(normalizeMarket)
+        .filter((market): market is Market => market !== null)
+        .filter((market) => market.status === "open")
+    ).slice(0, MAX_MARKETS);
 
     return {
       updatedAt: new Date().toISOString(),
@@ -341,4 +303,13 @@ export function createLimitlessClient(): LimitlessClient {
   return {
     fetchActiveMarkets
   };
+}
+
+function dedupeMarkets(markets: Market[]) {
+  const map = new Map<string, Market>();
+  for (const market of markets) {
+    map.set(market.id, market);
+  }
+
+  return [...map.values()];
 }

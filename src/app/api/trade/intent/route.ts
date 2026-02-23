@@ -6,6 +6,7 @@ import { logEvent } from "@/lib/observability";
 import { isAddressAllowedForBeta, isBetaModeEnabled } from "@/lib/security/beta-access";
 import { getRequestId } from "@/lib/security/request-context";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/security/rate-limit";
+import { isAddress } from "viem";
 
 export const runtime = "nodejs";
 
@@ -108,11 +109,25 @@ export async function POST(request: Request) {
       );
     }
 
-    const venueExchange = market.tradeVenue?.venueExchange;
+    const venueExchange = market.tradeVenue?.venueExchange ?? process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
     if (!venueExchange) {
       return Response.json(
         {
-          error: "Selected market does not expose venue.exchange; cannot build onchain trade intent",
+          error:
+            "Selected market does not expose venue.exchange and LIMITLESS_TRADE_CONTRACT_ADDRESS is not set",
+          requestId
+        },
+        {
+          status: 400,
+          headers: rateHeaders
+        }
+      );
+    }
+
+    if (!isAddress(venueExchange)) {
+      return Response.json(
+        {
+          error: "Resolved trade contract address is invalid",
           requestId
         },
         {

@@ -81,32 +81,17 @@ let sdkPromise: Promise<MiniAppSdk | null> | null = null;
 
 const KNOWN_MINI_APP_HOSTS = [
   "farcaster.xyz",
-  "farcaster.org",
   "wallet.farcaster.xyz",
   "base.app",
   "base.org",
   "base.dev",
   "warpcast.com",
-  "warpcast.org",
-  "www.warpcast.com",
-  "app.warpcast.com"
+  "warpcast.org"
 ];
 
 function isKnownHost(host: string) {
   const h = host.toLowerCase();
   return KNOWN_MINI_APP_HOSTS.some((known) => h === known || h.endsWith("." + known) || h.endsWith(known));
-}
-
-function referrerMatchesKnownHost(referrer: string) {
-  if (!referrer || !referrer.trim()) {
-    return false;
-  }
-  try {
-    const host = new URL(referrer).host.toLowerCase();
-    return isKnownHost(host) || host.includes("warpcast") || host.includes("farcaster") || host.includes("base.");
-  } catch {
-    return referrer.toLowerCase().includes("warpcast") || referrer.toLowerCase().includes("farcaster");
-  }
 }
 
 export function isLikelyMiniAppHost() {
@@ -120,12 +105,8 @@ export function isLikelyMiniAppHost() {
       return true;
     }
 
-    const referrer = getDocumentObject()?.referrer?.trim() ?? "";
     const referrerHost = getReferrerHost();
     if (referrerHost && isKnownHost(referrerHost)) {
-      return true;
-    }
-    if (referrer && referrerMatchesKnownHost(referrer)) {
       return true;
     }
 
@@ -137,7 +118,7 @@ export function isLikelyMiniAppHost() {
       return true;
     }
 
-    return isKnownHost(referrerHost) || referrerMatchesKnownHost(referrer);
+    return isKnownHost(referrerHost);
   } catch {
     return true;
   }

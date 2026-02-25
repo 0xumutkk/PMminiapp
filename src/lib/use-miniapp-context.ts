@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useMiniKit } from "@coinbase/onchainkit/minikit";
+import { useEffect, useState } from "react";
+import { getMiniAppContext, isLikelyMiniAppHost } from "@/lib/miniapp-sdk-safe";
 
 type MiniAppContext = {
   user?: {
@@ -16,46 +16,89 @@ type MiniAppContext = {
   };
 };
 
-export function useMiniAppContext() {
-  const { context: rawContext } = useMiniKit();
-  const [loaded, setLoaded] = useState(false);
-  const context: MiniAppContext | null = useMemo(() => {
-    if (!rawContext) {
-      return null;
-    }
+type RawMiniAppContext = {
+  user?: {
+    fid?: number;
+    username?: string;
+    displayName?: string;
+    pfpUrl?: string;
+  };
+  client?: {
+    clientFid?: number;
+    added?: boolean;
+  };
+};
 
-    return {
-      user: {
-        fid: rawContext.user?.fid,
-        username: rawContext.user?.username,
-        displayName: rawContext.user?.displayName,
-        pfpUrl: rawContext.user?.pfpUrl
-      },
-      client: {
-        clientFid: rawContext.client.clientFid,
-        added: rawContext.client.added
-      }
-    };
-  }, [rawContext]);
+function mapContext(rawContext: RawMiniAppContext | null): MiniAppContext | null {
+  if (!rawContext) {
+    return null;
+  }
+
+  return {
+    user: {
+      fid: rawContext.user?.fid,
+      username: rawContext.user?.username,
+      displayName: rawContext.user?.displayName,
+      pfpUrl: rawContext.user?.pfpUrl
+    },
+    client: {
+      clientFid: rawContext.client?.clientFid,
+      added: rawContext.client?.added
+    }
+  };
+}
+
+export function useMiniAppContext() {
+  const [context, setContext] = useState<MiniAppContext | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    if (context) {
+    let cancelled = false;
+    if (!isLikelyMiniAppHost()) {
+      setContext(null);
       setLoaded(true);
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
 
-    const timer = setTimeout(() => {
-      setLoaded(true);
-    }, 500);
+    const fallbackTimer = setTimeout(() => {
+      if (!cancelled) {
+        setLoaded(true);
+      }
+    }, 1_200);
+
+    async function loadContext() {
+      try {
+        const rawContext = (await getMiniAppContext(1_200)) as RawMiniAppContext | null;
+        if (cancelled) {
+          return;
+        }
+
+        setContext(mapContext(rawContext));
+        setLoaded(true);
+      } catch {
+        if (cancelled) {
+          return;
+        }
+
+        setContext(null);
+        setLoaded(true);
+      }
+    }
+
+    void loadContext();
 
     return () => {
-      clearTimeout(timer);
+      cancelled = true;
+      clearTimeout(fallbackTimer);
     };
-  }, [context]);
+  }, []);
 
   return {
     context,
     loaded,
-    inMiniAppHost: Boolean(context)
+    inMiniAppHost: Boolean(context),
+    isLikelyMiniAppHost: isLikelyMiniAppHost()
   };
 }

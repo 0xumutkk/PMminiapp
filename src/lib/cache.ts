@@ -68,7 +68,13 @@ async function buildCache(): Promise<MarketCache> {
     const redis = new Redis(redisUrl, {
       maxRetriesPerRequest: 1,
       enableOfflineQueue: false,
-      lazyConnect: true
+      lazyConnect: true,
+      retryStrategy: () => null
+    });
+
+    // Prevent noisy unhandled event logs when Redis is optional in local/dev.
+    redis.on("error", () => {
+      // no-op, cache falls back to in-memory mode
     });
 
     await redis.connect();

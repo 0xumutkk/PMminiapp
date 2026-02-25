@@ -27,24 +27,58 @@ type MiniAppFrameManifest = {
   noindex?: boolean;
 };
 
+function toAccountAssociation(value: unknown): AccountAssociation | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const candidate = value as Partial<AccountAssociation>;
+  if (candidate.header && candidate.payload && candidate.signature) {
+    return {
+      header: candidate.header,
+      payload: candidate.payload,
+      signature: candidate.signature
+    };
+  }
+
+  return undefined;
+}
+
 function parseAccountAssociation(): AccountAssociation | undefined {
   const raw = process.env.FARCASTER_ACCOUNT_ASSOCIATION_JSON;
   if (!raw) {
     return undefined;
   }
 
-  try {
-    const parsed = JSON.parse(raw) as Partial<AccountAssociation>;
+  const candidates = [raw.trim()];
+  const trimmed = raw.trim();
+  if (
+    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+  ) {
+    candidates.push(trimmed.slice(1, -1));
+  }
 
-    if (parsed.header && parsed.payload && parsed.signature) {
-      return {
-        header: parsed.header,
-        payload: parsed.payload,
-        signature: parsed.signature
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as {
+        accountAssociation?: unknown;
+        frame?: { accountAssociation?: unknown };
+        miniapp?: { accountAssociation?: unknown };
       };
+
+      const association =
+        toAccountAssociation(parsed) ??
+        toAccountAssociation(parsed.accountAssociation) ??
+        toAccountAssociation(parsed.frame?.accountAssociation) ??
+        toAccountAssociation(parsed.miniapp?.accountAssociation);
+
+      if (association) {
+        return association;
+      }
+    } catch {
+      // try the next candidate
     }
-  } catch {
-    // no-op
   }
 
   return undefined;
@@ -80,29 +114,164 @@ function parseBoolean(raw: string | undefined): boolean | undefined {
   return undefined;
 }
 
-export async function GET() {
-  const baseUrl = process.env.NEXT_PUBLIC_MINI_APP_URL ?? "https://example.com";
+function toOptionalShortText(raw: string | undefined, max = 30): string | undefined {
+  if (!raw) {
+    return undefined;
+  }
+
+  const value = raw.trim();
+  if (value.length === 0) {
+    return undefined;
+  }
+
+  return value.slice(0, max);
+}
+
+function parseUrl(raw: string | undefined) {
+  if (!raw) {
+    return null;
+  }
+
+  const value = raw.trim();
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return new URL(value);
+  } catch {
+    if (!/^https?:\/\//i.test(value)) {
+      try {
+        return new URL(`https://${value}`);
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+}
+
+function isIpv4Address(hostname: string) {
+  const parts = hostname.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+
+  return parts.every((part) => {
+    if (!/^\d+$/.test(part)) {
+      return false;
+    }
+    const value = Number(part);
+    return value >= 0 && value <= 255;
+  });
+}
+
+function isDisallowedManifestHost(hostname: string) {
+  const normalized = hostname.trim().toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "::1" ||
+    normalized === "[::1]" ||
+    normalized.endsWith(".localhost") ||
+    isIpv4Address(normalized)
+  );
+}
+
+function isPublicHttpsUrl(url: URL | null): url is URL {
+  if (!url) {
+    return false;
+  }
+
+  if (url.protocol !== "https:") {
+    return false;
+  }
+
+  return !isDisallowedManifestHost(url.hostname);
+}
+
+function resolveBaseUrl(request: Request) {
+  const requestUrl = parseUrl(request.url);
+  const configuredUrl = parseUrl(process.env.NEXT_PUBLIC_MINI_APP_URL);
+
+  if (isPublicHttpsUrl(configuredUrl)) {
+    if (!requestUrl) {
+      return configuredUrl.origin;
+    }
+
+    const configuredIsTunnel = configuredUrl.hostname.endsWith(".trycloudflare.com");
+    if (configuredIsTunnel && configuredUrl.host !== requestUrl.host && isPublicHttpsUrl(requestUrl)) {
+      return requestUrl.origin;
+    }
+
+    return configuredUrl.origin;
+  }
+
+  if (isPublicHttpsUrl(requestUrl)) {
+    return requestUrl.origin;
+  }
+
+  return "https://example.com";
+}
+
+function resolveAssetUrl(
+  raw: string | undefined,
+  fallbackUrl: string,
+  requestHost: string | undefined
+) {
+  const parsed = parseUrl(raw);
+  if (!parsed) {
+    return fallbackUrl;
+  }
+
+  if (!isPublicHttpsUrl(parsed)) {
+    return fallbackUrl;
+  }
+
+  if (
+    requestHost &&
+    parsed.hostname.endsWith(".trycloudflare.com") &&
+    parsed.host !== requestHost &&
+    !isDisallowedManifestHost(requestHost)
+  ) {
+    return fallbackUrl;
+  }
+
+  return parsed.toString();
+}
+
+export async function GET(request: Request) {
+  const baseUrl = resolveBaseUrl(request);
+  const requestHost = parseUrl(request.url)?.host;
   const screenshots = parseList(process.env.NEXT_PUBLIC_SCREENSHOT_URLS);
   const tags = parseList(process.env.NEXT_PUBLIC_APP_TAGS);
+  const iconUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_ICON_URL, `${baseUrl}/icon.png`, requestHost);
+  const splashImageUrl = resolveAssetUrl(
+    process.env.NEXT_PUBLIC_SPLASH_IMAGE_URL,
+    `${baseUrl}/splash.png`,
+    requestHost
+  );
+  const ogImageUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_OG_IMAGE_URL, `${baseUrl}/og.png`, requestHost);
+  const heroImageUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_HERO_IMAGE_URL, `${baseUrl}/og.png`, requestHost);
 
   const frame: MiniAppFrameManifest = {
     version: "1",
-    name: process.env.NEXT_PUBLIC_APP_NAME ?? "Pulse Markets",
+    name: (process.env.NEXT_PUBLIC_APP_NAME ?? "Pulse Markets").slice(0, 30),
     homeUrl: baseUrl,
-    iconUrl: process.env.NEXT_PUBLIC_ICON_URL ?? `${baseUrl}/icon.png`,
-    splashImageUrl: process.env.NEXT_PUBLIC_SPLASH_IMAGE_URL ?? `${baseUrl}/splash.png`,
+    iconUrl,
+    splashImageUrl,
     splashBackgroundColor: process.env.NEXT_PUBLIC_SPLASH_BG ?? "#0b1020",
     webhookUrl: process.env.MINI_APP_WEBHOOK_URL || process.env.FARCASTER_WEBHOOK_URL || undefined,
-    subtitle: process.env.NEXT_PUBLIC_APP_SUBTITLE || undefined,
-    description: process.env.NEXT_PUBLIC_APP_DESCRIPTION || undefined,
+    subtitle: toOptionalShortText(process.env.NEXT_PUBLIC_APP_SUBTITLE, 30),
+    description: toOptionalShortText(process.env.NEXT_PUBLIC_APP_DESCRIPTION, 30),
     screenshotUrls: screenshots,
     primaryCategory: process.env.NEXT_PUBLIC_PRIMARY_CATEGORY || "finance",
     tags,
-    heroImageUrl: process.env.NEXT_PUBLIC_HERO_IMAGE_URL || undefined,
-    tagline: process.env.NEXT_PUBLIC_APP_TAGLINE || undefined,
+    heroImageUrl: heroImageUrl || undefined,
+    tagline: toOptionalShortText(process.env.NEXT_PUBLIC_APP_TAGLINE, 30),
     ogTitle: process.env.NEXT_PUBLIC_OG_TITLE || undefined,
     ogDescription: process.env.NEXT_PUBLIC_OG_DESCRIPTION || undefined,
-    ogImageUrl: process.env.NEXT_PUBLIC_OG_IMAGE_URL || undefined,
+    ogImageUrl: ogImageUrl || undefined,
     noindex: parseBoolean(process.env.NEXT_PUBLIC_NOINDEX)
   };
 
@@ -111,10 +280,12 @@ export async function GET() {
     miniapp: frame,
     frame
   };
+  const cacheControl =
+    process.env.NODE_ENV === "production" ? "public, max-age=300" : "no-store, max-age=0";
 
   return Response.json(manifest, {
     headers: {
-      "Cache-Control": "public, max-age=300"
+      "Cache-Control": cacheControl
     }
   });
 }

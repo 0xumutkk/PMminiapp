@@ -4,7 +4,9 @@ export type TradeIntentRequest = {
   marketId: string;
   side: TradeSide;
   amountUsdc: string;
-  walletAddress?: string;
+  walletAddress: string;
+  expectedPrice?: number;
+  maxSlippageBps?: number;
 };
 
 export type BuildTradeIntentInput = TradeIntentRequest & {
@@ -12,6 +14,7 @@ export type BuildTradeIntentInput = TradeIntentRequest & {
   usdcToken?: `0x${string}`;
   functionSignature?: string;
   argMap?: string;
+  executionPrice?: number;
 };
 
 export type PreparedCall = {
@@ -29,6 +32,10 @@ export type TradeIntentSuccess = {
     side: TradeSide;
     amountUsdc: string;
     amountUnits: string;
+    executionPrice?: number;
+    expectedPrice?: number;
+    slippageBps?: number;
+    maxSlippageBps?: number;
   };
 };
 

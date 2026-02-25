@@ -9,7 +9,8 @@ import {
   useSendTransaction,
   useWaitForCallsStatus
 } from "wagmi";
-import { TradeIntentResponse, TradeSide } from "@/lib/trade/trade-types";
+import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
+import { TradeIntentResponse, TradeIntentSuccess, TradeSide } from "@/lib/trade/trade-types";
 
 type TradeExecutionStatus =
   | "idle"
@@ -24,12 +25,24 @@ type TradeState = {
   error: string | null;
   batchId: string | null;
   txHashes: `0x${string}`[];
+  pendingTrade: ConfirmedTrade | null;
+  lastConfirmedTrade: ConfirmedTrade | null;
 };
 
 type ExecuteTradeParams = {
   marketId: string;
   side: TradeSide;
   amountUsdc: string;
+  expectedPrice?: number;
+  maxSlippageBps?: number;
+};
+
+type ConfirmedTrade = {
+  marketId: string;
+  side: TradeSide;
+  amountUsdc: string;
+  executionPrice?: number;
+  confirmedAt: string;
 };
 
 function errorToMessage(error: unknown) {
@@ -51,10 +64,21 @@ function errorToMessage(error: unknown) {
   return "Unknown trade error";
 }
 
+function notifyPositionsRefresh() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent("positions:refresh"));
+}
+
 export function useTradeExecutor() {
   const { address, isConnected } = useAccount();
+  const { user, getAuthHeaders } = useMiniAppAuth();
   const chainId = useChainId();
   const publicClient = usePublicClient({ chainId });
+
+  const tradeAddress = user?.address ?? address;
 
   const { sendCallsAsync, isPending: isBatchSending } = useSendCalls();
   const { sendTransactionAsync, isPending: isTxSending } = useSendTransaction();
@@ -63,7 +87,9 @@ export function useTradeExecutor() {
     status: "idle",
     error: null,
     batchId: null,
-    txHashes: []
+    txHashes: [],
+    pendingTrade: null,
+    lastConfirmedTrade: null
   });
 
   const callsStatus = useWaitForCallsStatus({
@@ -90,12 +116,29 @@ export function useTradeExecutor() {
     }
 
     if (status === "success") {
-      setState((current) => ({ ...current, status: "confirmed", error: null }));
+      setState((current) => ({
+        ...current,
+        status: "confirmed",
+        error: null,
+        lastConfirmedTrade: current.pendingTrade
+          ? {
+              ...current.pendingTrade,
+              confirmedAt: new Date().toISOString()
+            }
+          : current.lastConfirmedTrade,
+        pendingTrade: null
+      }));
+      notifyPositionsRefresh();
       return;
     }
 
     if (status === "failure") {
-      setState((current) => ({ ...current, status: "failed", error: "Batch transaction failed" }));
+      setState((current) => ({
+        ...current,
+        status: "failed",
+        error: "Batch transaction failed",
+        pendingTrade: null
+      }));
     }
   }, [callsStatus.data?.status]);
 
@@ -105,26 +148,66 @@ export function useTradeExecutor() {
         throw new Error("Wallet must be connected before trading");
       }
 
-      setState({ status: "preparing", error: null, batchId: null, txHashes: [] });
+      if (user && address.toLowerCase() !== user.address.toLowerCase()) {
+        throw new Error(
+          "Wallet mismatch. Please connect with your authenticated wallet to trade."
+        );
+      }
+
+      const walletForTrade = tradeAddress ?? address;
+      if (!walletForTrade) {
+        throw new Error("Wallet must be connected before trading");
+      }
+
+      setState((current) => ({
+        ...current,
+        status: "preparing",
+        error: null,
+        batchId: null,
+        txHashes: [],
+        pendingTrade: null
+      }));
 
       try {
         const response = await fetch("/api/trade/intent", {
           method: "POST",
+          credentials: "include",
           headers: {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            ...getAuthHeaders()
           },
           body: JSON.stringify({
             marketId: params.marketId,
             side: params.side,
             amountUsdc: params.amountUsdc,
-            walletAddress: address
+            walletAddress: walletForTrade,
+            expectedPrice: params.expectedPrice,
+            maxSlippageBps: params.maxSlippageBps
           })
         });
 
-        const body = (await response.json()) as TradeIntentResponse | { error?: string };
+        const body = (await response.json()) as
+          | TradeIntentResponse
+          | {
+              error?: string;
+              guard?: {
+                expectedPrice?: number;
+                executionPrice?: number;
+                slippageBps?: number;
+                maxSlippageBps?: number;
+              };
+            };
 
         if (!response.ok) {
-          throw new Error(("error" in body && body.error) || `Trade intent failed with ${response.status}`);
+          const guardMessage =
+            "guard" in body && body.guard
+              ? ` Expected ${Number(body.guard.expectedPrice ?? 0).toFixed(3)}, current ${Number(
+                  body.guard.executionPrice ?? 0
+                ).toFixed(3)}, slippage ${body.guard.slippageBps ?? "-"}bps (max ${body.guard.maxSlippageBps ?? "-"}bps).`
+              : "";
+          throw new Error(
+            (("error" in body && body.error) || `Trade intent failed with ${response.status}`) + guardMessage
+          );
         }
 
         if (!("mode" in body) || body.mode !== "onchain") {
@@ -137,6 +220,14 @@ export function useTradeExecutor() {
           data: call.data,
           value: call.value ? BigInt(call.value) : 0n
         }));
+        const intentMeta = (body as TradeIntentSuccess).meta;
+        const pendingTrade: ConfirmedTrade = {
+          marketId: params.marketId,
+          side: params.side,
+          amountUsdc: params.amountUsdc,
+          executionPrice: intentMeta.executionPrice,
+          confirmedAt: new Date().toISOString()
+        };
 
         setState((current) => ({ ...current, status: "awaiting_signature", error: null }));
 
@@ -153,7 +244,8 @@ export function useTradeExecutor() {
             status: "submitted",
             error: null,
             batchId: batch.id,
-            txHashes: []
+            txHashes: [],
+            pendingTrade
           }));
           return;
         } catch {
@@ -187,19 +279,27 @@ export function useTradeExecutor() {
             status: "confirmed",
             error: null,
             batchId: null,
-            txHashes
+            txHashes,
+            pendingTrade: null,
+            lastConfirmedTrade: {
+              ...pendingTrade,
+              confirmedAt: new Date().toISOString()
+            }
           }));
+          notifyPositionsRefresh();
         }
       } catch (error) {
-        setState({
+        setState((current) => ({
+          ...current,
           status: "failed",
           error: errorToMessage(error),
           batchId: null,
-          txHashes: []
-        });
+          txHashes: [],
+          pendingTrade: null
+        }));
       }
     },
-    [address, chainId, isConnected, publicClient, sendCallsAsync, sendTransactionAsync]
+    [address, chainId, isConnected, publicClient, sendCallsAsync, sendTransactionAsync, tradeAddress, user, getAuthHeaders]
   );
 
   const isBusy =
@@ -236,6 +336,7 @@ export function useTradeExecutor() {
   return {
     executeTrade,
     state,
+    lastConfirmedTrade: state.lastConfirmedTrade,
     isBusy,
     isConnected,
     statusLabel,

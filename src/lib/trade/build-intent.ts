@@ -196,7 +196,10 @@ export function buildTradeIntent(input: BuildTradeIntentInput): TradeIntentRespo
       marketId: input.marketId,
       side: input.side,
       amountUsdc: input.amountUsdc,
-      amountUnits: amountUnits.toString()
+      amountUnits: amountUnits.toString(),
+      executionPrice: input.executionPrice,
+      expectedPrice: input.expectedPrice,
+      maxSlippageBps: input.maxSlippageBps
     }
   };
 }

@@ -1,4 +1,5 @@
 import { getClientIp } from "@/lib/security/request-context";
+import { getSecurityRedisClient } from "@/lib/security/redis-store";
 
 type RateLimitEvent = {
   at: number;
@@ -27,6 +28,8 @@ declare global {
   var __apiRateLimitStore: Store | undefined;
 }
 
+const RATE_LIMIT_KEY_PREFIX = "miniapp:ratelimit:";
+
 function getStore() {
   if (!globalThis.__apiRateLimitStore) {
     globalThis.__apiRateLimitStore = new Map();
@@ -35,19 +38,8 @@ function getStore() {
   return globalThis.__apiRateLimitStore;
 }
 
-export function checkRateLimit(options: RateLimitOptions): RateLimitResult {
+function checkRateLimitInMemory(options: RateLimitOptions): RateLimitResult {
   const { bucket, request, limit, windowMs, cost = 1 } = options;
-
-  if (process.env.API_RATE_LIMIT_ENABLED === "false") {
-    return {
-      ok: true,
-      limit,
-      remaining: limit,
-      retryAfterMs: 0,
-      resetAfterMs: windowMs
-    };
-  }
-
   const now = Date.now();
   const ip = getClientIp(request);
   const key = `${bucket}:${ip}`;
@@ -79,6 +71,67 @@ export function checkRateLimit(options: RateLimitOptions): RateLimitResult {
     retryAfterMs: 0,
     resetAfterMs: Math.max(0, windowMs - (now - oldest))
   };
+}
+
+async function checkRateLimitInRedis(options: RateLimitOptions) {
+  const { bucket, request, limit, windowMs, cost = 1 } = options;
+  const redis = await getSecurityRedisClient();
+  if (!redis) {
+    return null;
+  }
+
+  const now = Date.now();
+  const ip = getClientIp(request);
+  const windowIndex = Math.floor(now / windowMs);
+  const key = `${RATE_LIMIT_KEY_PREFIX}${bucket}:${ip}:${windowIndex}`;
+  const resetAtMs = (windowIndex + 1) * windowMs;
+  const resetAfterMs = Math.max(0, resetAtMs - now);
+
+  try {
+    const totalUsed = await redis.incrby(key, cost);
+    await redis.pexpire(key, windowMs * 2);
+
+    if (totalUsed > limit) {
+      return {
+        ok: false,
+        limit,
+        remaining: 0,
+        retryAfterMs: resetAfterMs,
+        resetAfterMs
+      } satisfies RateLimitResult;
+    }
+
+    return {
+      ok: true,
+      limit,
+      remaining: Math.max(0, limit - totalUsed),
+      retryAfterMs: 0,
+      resetAfterMs
+    } satisfies RateLimitResult;
+  } catch {
+    return null;
+  }
+}
+
+export async function checkRateLimit(options: RateLimitOptions): Promise<RateLimitResult> {
+  const { limit, windowMs } = options;
+
+  if (process.env.API_RATE_LIMIT_ENABLED === "false") {
+    return {
+      ok: true,
+      limit,
+      remaining: limit,
+      retryAfterMs: 0,
+      resetAfterMs: windowMs
+    };
+  }
+
+  const redisResult = await checkRateLimitInRedis(options);
+  if (redisResult) {
+    return redisResult;
+  }
+
+  return checkRateLimitInMemory(options);
 }
 
 export function rateLimitHeaders(result: RateLimitResult) {

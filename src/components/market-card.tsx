@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Market } from "@/lib/market-types";
 import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
+import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 
 function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
@@ -229,8 +230,14 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [showConfirmed, setShowConfirmed] = useState(false);
   const [lastTradeSide, setLastTradeSide] = useState<"yes" | "no">("yes");
+  const [maxSlippageBps, setMaxSlippageBps] = useState(200);
+  const [pendingReview, setPendingReview] = useState<{
+    side: "yes" | "no";
+    expectedPrice: number;
+  } | null>(null);
 
   const { executeTrade, isBusy, isConnected, state, statusLabel, isBatchWaiting } = useTradeExecutor();
+  const { isAuthenticated, status: authStatus, signIn, error: authError } = useMiniAppAuth();
 
   const topic = useMemo(() => inferTopic(market.title), [market.title]);
   const backdropStyle = useMemo(() => getBackdropStyle(market.id, topic), [market.id, topic]);
@@ -264,13 +271,36 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
     };
   }, [state.status]);
 
-  async function onTrade(side: "yes" | "no") {
-    setLastTradeSide(side);
+  useEffect(() => {
+    if (!pendingReview) {
+      return;
+    }
+
+    const nextExpectedPrice = pendingReview.side === "yes" ? market.yesPrice : market.noPrice;
+    setPendingReview((current) => (current ? { ...current, expectedPrice: nextExpectedPrice } : null));
+  }, [market.noPrice, market.yesPrice, pendingReview]);
+
+  function onRequestTrade(side: "yes" | "no") {
+    setPendingReview({
+      side,
+      expectedPrice: side === "yes" ? market.yesPrice : market.noPrice
+    });
+  }
+
+  async function onConfirmTrade() {
+    if (!pendingReview) {
+      return;
+    }
+
+    setLastTradeSide(pendingReview.side);
     await executeTrade({
       marketId: market.id,
-      side,
-      amountUsdc
+      side: pendingReview.side,
+      amountUsdc,
+      expectedPrice: pendingReview.expectedPrice,
+      maxSlippageBps
     });
+    setPendingReview(null);
   }
 
   const volume = market.volume24h ?? 0;
@@ -281,9 +311,16 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
 
   const tradeStatusText = !isConnected
     ? "Connect wallet to place a bet."
+    : !isAuthenticated
+      ? authStatus === "authenticating"
+        ? "Signing in..."
+        : "Sign in to place a bet."
+    : pendingReview
+      ? "Review trade details before signing."
     : `${statusLabel}${isBatchWaiting ? " (awaiting batch receipt)" : ""}`;
   const amountNumber = Number(amountUsdc);
   const displayAmount = Number.isFinite(amountNumber) && amountNumber > 0 ? amountNumber : 0;
+  const slippagePercent = (maxSlippageBps / 100).toFixed(2);
 
   return (
     <article className="market-card" data-active={isActive ? "true" : "false"}>
@@ -357,12 +394,23 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           <span>USDC</span>
         </label>
 
+        {isConnected && !isAuthenticated ? (
+          <button
+            type="button"
+            className="market-auth-btn"
+            onClick={() => void signIn()}
+            disabled={authStatus === "authenticating"}
+          >
+            {authStatus === "authenticating" ? "Signing in..." : "Sign in to trade"}
+          </button>
+        ) : null}
+
         <div className="vote-actions">
           <button
             type="button"
             className="vote-btn vote-btn--yes"
-            onClick={() => onTrade("yes")}
-            disabled={isBusy || !isConnected}
+            onClick={() => onRequestTrade("yes")}
+            disabled={isBusy || !isConnected || !isAuthenticated}
           >
             <CheckIcon />
             YES · {formatPercent(market.yesPrice)}
@@ -370,15 +418,55 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           <button
             type="button"
             className="vote-btn vote-btn--no"
-            onClick={() => onTrade("no")}
-            disabled={isBusy || !isConnected}
+            onClick={() => onRequestTrade("no")}
+            disabled={isBusy || !isConnected || !isAuthenticated}
           >
             <CloseIcon />
             NO · {formatPercent(market.noPrice)}
           </button>
         </div>
 
+        {pendingReview ? (
+          <div className="trade-review" role="status" aria-live="polite">
+            <p className="trade-review__title">Review before signing</p>
+            <p className="trade-review__line">
+              Side: <strong>{pendingReview.side.toUpperCase()}</strong> at{" "}
+              <strong>{formatPercent(pendingReview.expectedPrice)}</strong>
+            </p>
+            <p className="trade-review__line">
+              Stake: <strong>{displayAmount.toLocaleString("en-US")} USDC</strong>
+            </p>
+            <label className="trade-review__slippage">
+              Max slippage
+              <select
+                value={maxSlippageBps}
+                onChange={(event) => setMaxSlippageBps(Number(event.target.value))}
+                disabled={isBusy}
+              >
+                <option value={100}>1.00%</option>
+                <option value={200}>2.00%</option>
+                <option value={300}>3.00%</option>
+              </select>
+              <span>{slippagePercent}%</span>
+            </label>
+            <div className="trade-review__actions">
+              <button type="button" className="trade-review__btn" onClick={onConfirmTrade} disabled={isBusy}>
+                Confirm
+              </button>
+              <button
+                type="button"
+                className="trade-review__btn trade-review__btn--ghost"
+                onClick={() => setPendingReview(null)}
+                disabled={isBusy}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         <p className={`trade-status trade-status--${state.status}`}>{tradeStatusText}</p>
+        {!isAuthenticated && authError ? <p className="trade-status trade-status--failed">{authError}</p> : null}
       </section>
 
       {showConfirmed ? (

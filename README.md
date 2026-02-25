@@ -19,6 +19,7 @@ This repository implements a Base Mini App with live Limitless markets and oncha
 
 3. Onchain trade intent
 - `POST /api/trade/intent` returns approve + trade calls
+- SIWF/Quick Auth is required by default in production (override with `TRADE_AUTH_REQUIRED`)
 - Market venue metadata used first
 - Env fallback support:
   - `USDC_TOKEN_ADDRESS`
@@ -33,6 +34,8 @@ This repository implements a Base Mini App with live Limitless markets and oncha
 
 5. Launch security
 - API rate limiting for markets, stream, trade intent
+- SIWF auth verification (`POST /api/auth/siwf`) with replay-protected nonce tracking
+- Session endpoint (`GET|DELETE /api/auth/session`) backed by HttpOnly auth cookie
 - Optional beta allowlist mode
 - `GET /api/health` status endpoint
 
@@ -77,8 +80,12 @@ npm run worker
 
 - `src/app/.well-known/farcaster.json/route.ts`
 - `src/components/providers.tsx`
+- `src/components/miniapp-auth-provider.tsx`
 - `src/lib/use-farcaster-ready.ts`
 - `src/lib/use-miniapp-context.ts`
+- `src/lib/security/miniapp-auth.ts`
+- `src/app/api/auth/siwf/route.ts`
+- `src/app/api/auth/session/route.ts`
 - `src/components/vertical-market-feed.tsx`
 - `src/app/api/markets/route.ts`
 - `src/app/api/markets/stream/route.ts`

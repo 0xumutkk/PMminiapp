@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --turbopack",
+    "dev:webpack": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "tsx --test src/**/*.test.ts",
     "worker": "tsx src/server/indexer-worker.ts"
   },
   "dependencies": {

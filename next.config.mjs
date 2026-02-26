@@ -1,6 +1,16 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typedRoutes: true,
+  experimental: {
+    optimizePackageImports: ["wagmi", "viem", "@tanstack/react-query"],
+  },
+  turbopack: {
+    resolveAlias: {
+      "@react-native-async-storage/async-storage": {
+        browser: "./src/lib/shims/empty-module.ts"
+      }
+    }
+  },
   async headers() {
     const corsHeaders = [
       { key: "Access-Control-Allow-Origin", value: "*" },
@@ -51,13 +61,6 @@ const nextConfig = {
         headers: cspHeaders
       }
     ];
-  },
-  webpack: (config) => {
-    config.resolve.fallback = {
-      ...config.resolve.fallback,
-      "@react-native-async-storage/async-storage": false
-    };
-    return config;
   }
 };
 

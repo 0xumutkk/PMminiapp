@@ -18,7 +18,7 @@ This repository implements a Base Mini App with live Limitless markets and oncha
 - `GET /api/markets/stream` SSE realtime updates
 
 3. Onchain trade intent
-- `POST /api/trade/intent` returns approve + trade calls
+- `POST /api/trade/intent` supports `buy`, `sell`, and `redeem` actions
 - SIWF/Quick Auth is required by default in production (override with `TRADE_AUTH_REQUIRED`)
 - Market venue metadata used first
 - Env fallback support:
@@ -26,6 +26,13 @@ This repository implements a Base Mini App with live Limitless markets and oncha
   - `LIMITLESS_TRADE_CONTRACT_ADDRESS`
   - `LIMITLESS_TRADE_FUNCTION_SIGNATURE`
   - `LIMITLESS_TRADE_ARG_MAP`
+  - `LIMITLESS_SELL_CONTRACT_ADDRESS`
+  - `LIMITLESS_SELL_FUNCTION_SIGNATURE`
+  - `LIMITLESS_SELL_ARG_MAP`
+  - `LIMITLESS_REDEEM_CONTRACT_ADDRESS`
+  - `LIMITLESS_REDEEM_FUNCTION_SIGNATURE`
+  - `LIMITLESS_REDEEM_ARG_MAP`
+  - `TRADE_APPROVE_ACTIONS`
 
 4. Feed performance and reliability
 - Vertical virtualized market feed
@@ -56,6 +63,14 @@ If market metadata is incomplete, set:
 - `LIMITLESS_TRADE_CONTRACT_ADDRESS`
 - `LIMITLESS_TRADE_FUNCTION_SIGNATURE`
 - `LIMITLESS_TRADE_ARG_MAP`
+
+For position exits and settlement claims, set:
+- `LIMITLESS_SELL_CONTRACT_ADDRESS`
+- `LIMITLESS_SELL_FUNCTION_SIGNATURE`
+- `LIMITLESS_SELL_ARG_MAP`
+- `LIMITLESS_REDEEM_CONTRACT_ADDRESS`
+- `LIMITLESS_REDEEM_FUNCTION_SIGNATURE`
+- `LIMITLESS_REDEEM_ARG_MAP`
 
 ## Run
 

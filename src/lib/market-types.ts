@@ -3,6 +3,7 @@ export type MarketStatus = "open" | "closed" | "resolved";
 export type MarketTradeVenue = {
   venueExchange?: `0x${string}`;
   venueAdapter?: `0x${string}`;
+  marketRef?: string;
   functionSignature?: string;
   argMap?: string;
 };
@@ -12,6 +13,7 @@ export type Market = {
   title: string;
   yesPrice: number;
   noPrice: number;
+  minTradeSizeUsdc?: number;
   volume24h?: number;
   endsAt?: string;
   status: MarketStatus;

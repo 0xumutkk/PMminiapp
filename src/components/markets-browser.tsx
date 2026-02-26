@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
+import Link from "next/link";
 import type { MarketSnapshot } from "@/lib/market-types";
-
-type FetchState = {
-  loading: boolean;
-  error: string | null;
-  snapshot: MarketSnapshot | null;
-};
+import {
+  CATEGORY_FILTER_OPTIONS,
+  inferMarketCategoryId,
+  marketCategoryLabel,
+  type MarketCategoryFilter
+} from "@/lib/market-category";
+import { useQuery } from "@tanstack/react-query";
 
 function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
@@ -39,69 +41,60 @@ function sortByEndingSoon(markets: MarketSnapshot["markets"]) {
   });
 }
 
-export function MarketsBrowser() {
-  const [query, setQuery] = useState("");
-  const [state, setState] = useState<FetchState>({
-    loading: true,
-    error: null,
-    snapshot: null
+async function fetchMarketsSnapshot(): Promise<MarketSnapshot> {
+  const response = await fetch("/api/markets", {
+    cache: "no-store"
   });
 
-  useEffect(() => {
-    let cancelled = false;
+  if (!response.ok) {
+    throw new Error(`Failed to load markets (${response.status})`);
+  }
 
-    const load = async () => {
-      try {
-        const response = await fetch("/api/markets", { cache: "no-store" });
-        if (!response.ok) {
-          throw new Error(`Failed to load markets (${response.status})`);
-        }
+  return (await response.json()) as MarketSnapshot;
+}
 
-        const snapshot = (await response.json()) as MarketSnapshot;
-        if (!cancelled) {
-          setState({
-            loading: false,
-            error: null,
-            snapshot: {
-              ...snapshot,
-              markets: sortByEndingSoon(snapshot.markets)
-            }
-          });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setState({
-            loading: false,
-            error: error instanceof Error ? error.message : "Unknown error",
-            snapshot: null
-          });
-        }
-      }
-    };
+export function MarketsBrowser() {
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const [activeCategory, setActiveCategory] = useState<MarketCategoryFilter>("all");
 
-    void load();
+  const marketsQuery = useQuery({
+    queryKey: ["markets", "snapshot"],
+    queryFn: fetchMarketsSnapshot
+  });
 
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const markets = useMemo(
+    () => sortByEndingSoon(marketsQuery.data?.markets ?? []),
+    [marketsQuery.data?.markets]
+  );
 
-  const filteredMarkets = useMemo(() => {
-    const markets = state.snapshot?.markets ?? [];
-    const text = query.trim().toLowerCase();
-    if (!text) {
-      return markets;
+  const availableCategories = useMemo(() => {
+    const set = new Set<MarketCategoryFilter>(["all"]);
+    for (const market of markets) {
+      set.add(inferMarketCategoryId(market.title));
     }
 
-    return markets.filter((market) => market.title.toLowerCase().includes(text));
-  }, [query, state.snapshot?.markets]);
+    return CATEGORY_FILTER_OPTIONS.filter((option) => set.has(option.id));
+  }, [markets]);
 
-  if (state.loading) {
+  const filteredMarkets = useMemo(() => {
+    const text = deferredQuery.trim().toLowerCase();
+
+    return markets.filter((market) => {
+      const matchesQuery = !text || market.title.toLowerCase().includes(text);
+      const matchesCategory =
+        activeCategory === "all" || inferMarketCategoryId(market.title) === activeCategory;
+      return matchesQuery && matchesCategory;
+    });
+  }, [activeCategory, deferredQuery, markets]);
+
+  if (marketsQuery.isLoading) {
     return <p className="state-text">Loading markets...</p>;
   }
 
-  if (state.error) {
-    return <p className="state-text state-text--error">{state.error}</p>;
+  if (marketsQuery.error) {
+    const message = marketsQuery.error instanceof Error ? marketsQuery.error.message : "Unknown error";
+    return <p className="state-text state-text--error">{message}</p>;
   }
 
   return (
@@ -117,16 +110,41 @@ export function MarketsBrowser() {
         />
       </label>
 
+      <div className="category-filters" role="tablist" aria-label="Market categories">
+        {availableCategories.map((category) => {
+          const selected = category.id === activeCategory;
+          return (
+            <button
+              key={category.id}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              className={`category-filters__item${selected ? " category-filters__item--active" : ""}`}
+              onClick={() => setActiveCategory(category.id)}
+            >
+              {category.label}
+            </button>
+          );
+        })}
+      </div>
+
       <div className="market-list">
         {filteredMarkets.map((market) => (
-          <article key={market.id} className="market-list__item">
-            <p className="market-list__title">{market.title}</p>
-            <p className="market-list__meta">
-              <span className="chip chip--yes">YES {formatPercent(market.yesPrice)}</span>
-              <span className="chip chip--no">NO {formatPercent(market.noPrice)}</span>
-              <span>Ends {formatEndsAt(market.endsAt)}</span>
-            </p>
-          </article>
+          <Link
+            key={market.id}
+            href={`/markets/${encodeURIComponent(market.id)}`}
+            className="market-list__link"
+          >
+            <article className="market-list__item">
+              <p className="market-list__title">{market.title}</p>
+              <p className="market-list__meta">
+                <span className="chip chip--category">{marketCategoryLabel(inferMarketCategoryId(market.title))}</span>
+                <span className="chip chip--yes">YES {formatPercent(market.yesPrice)}</span>
+                <span className="chip chip--no">NO {formatPercent(market.noPrice)}</span>
+                <span>Ends {formatEndsAt(market.endsAt)}</span>
+              </p>
+            </article>
+          </Link>
         ))}
 
         {filteredMarkets.length === 0 ? <p className="state-text">No matches found.</p> : null}

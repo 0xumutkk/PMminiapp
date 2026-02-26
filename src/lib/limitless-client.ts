@@ -42,6 +42,7 @@ type LimitlessCollateralToken = {
 type LimitlessActiveMarketRow = {
   id?: unknown;
   slug?: unknown;
+  conditionId?: unknown;
   title?: unknown;
   prices?: unknown;
   status?: unknown;
@@ -52,6 +53,7 @@ type LimitlessActiveMarketRow = {
   expirationDate?: unknown;
   venue?: unknown;
   collateralToken?: unknown;
+  settings?: unknown;
   markets?: unknown;
 };
 
@@ -155,13 +157,45 @@ function parseVolume(row: LimitlessActiveMarketRow) {
   return Number.isFinite(scaled) ? scaled : undefined;
 }
 
+function parseMinTradeSizeUsdc(row: LimitlessActiveMarketRow) {
+  const settings =
+    typeof row.settings === "object" && row.settings !== null ? (row.settings as { minSize?: unknown }) : undefined;
+  const minSizeRaw = settings?.minSize;
+  if (minSizeRaw === undefined || minSizeRaw === null) {
+    return undefined;
+  }
+
+  const collateral = typeof row.collateralToken === "object" && row.collateralToken !== null
+    ? (row.collateralToken as LimitlessCollateralToken)
+    : undefined;
+  const decimals = toNumber(collateral?.decimals) ?? 6;
+
+  const scaled =
+    typeof minSizeRaw === "number"
+      ? minSizeRaw / 10 ** decimals
+      : typeof minSizeRaw === "string"
+        ? Number(minSizeRaw) / 10 ** decimals
+        : Number.NaN;
+
+  if (!Number.isFinite(scaled) || scaled <= 0) {
+    return undefined;
+  }
+
+  return Number(scaled.toFixed(6));
+}
+
 function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
   const prices = parsePrices(row.prices);
   if (!prices) {
     return null;
   }
 
-  const id = toString(row.slug) ?? toString(row.id);
+  const conditionId = toString(row.conditionId);
+  const marketRef =
+    (conditionId && /^0x[0-9a-fA-F]{64}$/.test(conditionId) ? conditionId : undefined) ??
+    toString(row.id) ??
+    toString(row.slug);
+  const id = toString(row.slug) ?? marketRef;
   const title = toString(row.title);
   if (!id || !title) {
     return null;
@@ -176,12 +210,14 @@ function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
     title,
     yesPrice: prices.yesPrice,
     noPrice: prices.noPrice,
+    minTradeSizeUsdc: parseMinTradeSizeUsdc(row),
     volume24h: parseVolume(row),
     endsAt: parseEndsAt(row),
     status: normalizeStatus(row.status, row.expired),
     tradeVenue: {
       ...(exchange && isAddress(exchange) ? { venueExchange: exchange } : {}),
-      ...(adapter && isAddress(adapter) ? { venueAdapter: adapter } : {})
+      ...(adapter && isAddress(adapter) ? { venueAdapter: adapter } : {}),
+      ...(marketRef ? { marketRef } : {})
     },
     source: "limitless"
   };

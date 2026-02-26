@@ -225,18 +225,20 @@ function CloseIcon() {
   );
 }
 
+const SLIPPAGE_PRESETS = [100, 200, 300, 500] as const;
+
+function formatTxHash(hash: string) {
+  return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
+}
+
 export function MarketCard({ market, isActive }: { market: Market; isActive: boolean }) {
   const [amountUsdc, setAmountUsdc] = useState("5");
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [showConfirmed, setShowConfirmed] = useState(false);
-  const [lastTradeSide, setLastTradeSide] = useState<"yes" | "no">("yes");
   const [maxSlippageBps, setMaxSlippageBps] = useState(200);
-  const [pendingReview, setPendingReview] = useState<{
-    side: "yes" | "no";
-    expectedPrice: number;
-  } | null>(null);
+  const [busySince, setBusySince] = useState<number | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
 
-  const { executeTrade, isBusy, isConnected, state, statusLabel, isBatchWaiting } = useTradeExecutor();
+  const { executeTrade, resetTradeState, isBusy, isConnected, state, statusLabel } = useTradeExecutor();
   const { isAuthenticated, status: authStatus, signIn, error: authError } = useMiniAppAuth();
 
   const topic = useMemo(() => inferTopic(market.title), [market.title]);
@@ -257,50 +259,54 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
   }, [isActive]);
 
   useEffect(() => {
-    if (state.status !== "confirmed") {
+    const inProgress =
+      state.status === "preparing" || state.status === "awaiting_signature" || state.status === "submitted";
+
+    if (inProgress && busySince === null) {
+      setBusySince(Date.now());
       return;
     }
 
-    setShowConfirmed(true);
-    const timeout = setTimeout(() => {
-      setShowConfirmed(false);
-    }, 2200);
-
-    return () => {
-      clearTimeout(timeout);
-    };
-  }, [state.status]);
+    if (!inProgress && busySince !== null) {
+      setBusySince(null);
+    }
+  }, [busySince, state.status]);
 
   useEffect(() => {
-    if (!pendingReview) {
+    const minStake = market.minTradeSizeUsdc;
+    if (!minStake) {
       return;
     }
 
-    const nextExpectedPrice = pendingReview.side === "yes" ? market.yesPrice : market.noPrice;
-    setPendingReview((current) => (current ? { ...current, expectedPrice: nextExpectedPrice } : null));
-  }, [market.noPrice, market.yesPrice, pendingReview]);
-
-  function onRequestTrade(side: "yes" | "no") {
-    setPendingReview({
-      side,
-      expectedPrice: side === "yes" ? market.yesPrice : market.noPrice
+    setAmountUsdc((current) => {
+      const parsed = Number(current);
+      if (!Number.isFinite(parsed) || parsed < minStake) {
+        return String(minStake);
+      }
+      return current;
     });
-  }
+  }, [market.id, market.minTradeSizeUsdc]);
 
-  async function onConfirmTrade() {
-    if (!pendingReview) {
+  async function onTrade(side: "yes" | "no") {
+    const parsedAmount = Number(amountUsdc);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setLocalError("Enter a valid stake amount.");
       return;
     }
 
-    setLastTradeSide(pendingReview.side);
+    if (market.minTradeSizeUsdc && parsedAmount < market.minTradeSizeUsdc) {
+      setLocalError(`Minimum stake is ${market.minTradeSizeUsdc.toLocaleString("en-US")} USDC.`);
+      return;
+    }
+
+    setLocalError(null);
     await executeTrade({
       marketId: market.id,
-      side: pendingReview.side,
+      side,
       amountUsdc,
-      expectedPrice: pendingReview.expectedPrice,
+      expectedPrice: side === "yes" ? market.yesPrice : market.noPrice,
       maxSlippageBps
     });
-    setPendingReview(null);
   }
 
   const volume = market.volume24h ?? 0;
@@ -308,18 +314,28 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
   const commentCount = formatCompactNumber(Math.max(900, volume * 11));
   const shareCount = formatCompactNumber(Math.max(400, volume * 5.2));
   const participants = formatCompactNumber(Math.max(4_100, volume * 23));
+  const latestTxHash = state.txHashes[state.txHashes.length - 1] ?? null;
+  const txExplorerUrl = latestTxHash ? `https://basescan.org/tx/${latestTxHash}` : null;
+  const busyMs = busySince ? Date.now() - busySince : 0;
+  const isStuck = isBusy && busySince !== null && busyMs > 25_000;
+  const showProgressNotice =
+    isConnected &&
+    isAuthenticated &&
+    (state.status === "preparing" || state.status === "awaiting_signature" || state.status === "submitted");
 
   const tradeStatusText = !isConnected
     ? "Connect wallet to place a bet."
     : !isAuthenticated
-      ? authStatus === "authenticating"
+      ? authStatus === "loading"
+        ? "Checking sign-in..."
+        : authStatus === "authenticating"
         ? "Signing in..."
         : "Sign in to place a bet."
-    : pendingReview
-      ? "Review trade details before signing."
-    : `${statusLabel}${isBatchWaiting ? " (awaiting batch receipt)" : ""}`;
-  const amountNumber = Number(amountUsdc);
-  const displayAmount = Number.isFinite(amountNumber) && amountNumber > 0 ? amountNumber : 0;
+    : localError
+      ? localError
+    : state.status === "failed"
+      ? state.error ?? "Trade failed"
+      : "";
   const slippagePercent = (maxSlippageBps / 100).toFixed(2);
 
   return (
@@ -393,8 +409,29 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           />
           <span>USDC</span>
         </label>
+        {market.minTradeSizeUsdc ? (
+          <p className="stake-min-hint">Min stake: {market.minTradeSizeUsdc.toLocaleString("en-US")} USDC</p>
+        ) : null}
 
-        {isConnected && !isAuthenticated ? (
+        <div className="slippage-control" role="group" aria-label="Max slippage">
+          <span>Slippage {slippagePercent}%</span>
+          <div className="slippage-control__options">
+            {SLIPPAGE_PRESETS.map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                className={`slippage-control__btn${preset === maxSlippageBps ? " slippage-control__btn--active" : ""}`}
+                onClick={() => setMaxSlippageBps(preset)}
+                disabled={isBusy}
+                aria-pressed={preset === maxSlippageBps}
+              >
+                {(preset / 100).toFixed(2)}%
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {isConnected && authStatus !== "loading" && !isAuthenticated ? (
           <button
             type="button"
             className="market-auth-btn"
@@ -409,7 +446,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           <button
             type="button"
             className="vote-btn vote-btn--yes"
-            onClick={() => onRequestTrade("yes")}
+            onClick={() => void onTrade("yes")}
             disabled={isBusy || !isConnected || !isAuthenticated}
           >
             <CheckIcon />
@@ -418,7 +455,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           <button
             type="button"
             className="vote-btn vote-btn--no"
-            onClick={() => onRequestTrade("no")}
+            onClick={() => void onTrade("no")}
             disabled={isBusy || !isConnected || !isAuthenticated}
           >
             <CloseIcon />
@@ -426,61 +463,52 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           </button>
         </div>
 
-        {pendingReview ? (
-          <div className="trade-review" role="status" aria-live="polite">
-            <p className="trade-review__title">Review before signing</p>
-            <p className="trade-review__line">
-              Side: <strong>{pendingReview.side.toUpperCase()}</strong> at{" "}
-              <strong>{formatPercent(pendingReview.expectedPrice)}</strong>
-            </p>
-            <p className="trade-review__line">
-              Stake: <strong>{displayAmount.toLocaleString("en-US")} USDC</strong>
-            </p>
-            <label className="trade-review__slippage">
-              Max slippage
-              <select
-                value={maxSlippageBps}
-                onChange={(event) => setMaxSlippageBps(Number(event.target.value))}
-                disabled={isBusy}
+        {showProgressNotice ? (
+          <div className={`trade-notice trade-notice--${state.status}`} role="status" aria-live="polite">
+            <p className="trade-notice__title">Processing trade</p>
+            <p className="trade-notice__detail">{statusLabel}</p>
+            {txExplorerUrl ? (
+              <a
+                className="trade-notice__link"
+                href={txExplorerUrl}
+                target="_blank"
+                rel="noreferrer noopener"
               >
-                <option value={100}>1.00%</option>
-                <option value={200}>2.00%</option>
-                <option value={300}>3.00%</option>
-              </select>
-              <span>{slippagePercent}%</span>
-            </label>
-            <div className="trade-review__actions">
-              <button type="button" className="trade-review__btn" onClick={onConfirmTrade} disabled={isBusy}>
-                Confirm
+                View latest tx on BaseScan
+              </a>
+            ) : null}
+            {isStuck ? (
+              <button type="button" className="trade-notice__dismiss" onClick={() => resetTradeState()}>
+                Unlock controls
               </button>
-              <button
-                type="button"
-                className="trade-review__btn trade-review__btn--ghost"
-                onClick={() => setPendingReview(null)}
-                disabled={isBusy}
-              >
-                Cancel
-              </button>
-            </div>
+            ) : null}
           </div>
         ) : null}
 
-        <p className={`trade-status trade-status--${state.status}`}>{tradeStatusText}</p>
+        {isConnected && isAuthenticated && state.status === "confirmed" ? (
+          <div className={`trade-notice trade-notice--${state.status}`} role="status" aria-live="polite">
+            <p className="trade-notice__title">Trade confirmed</p>
+            <p className="trade-notice__detail">
+              {latestTxHash ? `Tx: ${formatTxHash(latestTxHash)}` : "Confirmed onchain."}
+            </p>
+            {txExplorerUrl ? (
+              <a
+                className="trade-notice__link"
+                href={txExplorerUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                View on BaseScan
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+
+        {tradeStatusText ? (
+          <p className={`trade-status trade-status--${localError ? "failed" : state.status}`}>{tradeStatusText}</p>
+        ) : null}
         {!isAuthenticated && authError ? <p className="trade-status trade-status--failed">{authError}</p> : null}
       </section>
-
-      {showConfirmed ? (
-        <div className="trade-confirm-overlay" aria-live="polite">
-          <span className="trade-confirm-overlay__icon">
-            <CheckIcon />
-          </span>
-          <p>BET CONFIRMED</p>
-          <strong>${displayAmount.toLocaleString("en-US")}</strong>
-          <span className="trade-confirm-overlay__result" data-side={lastTradeSide}>
-            You bet {lastTradeSide.toUpperCase()}
-          </span>
-        </div>
-      ) : null}
     </article>
   );
 }

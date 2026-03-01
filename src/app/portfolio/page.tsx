@@ -1,12 +1,5 @@
-import { AppShell } from "@/components/app-shell";
-import { PositionsPanel } from "@/components/positions-panel";
+import { redirect } from "next/navigation";
 
 export default function PortfolioPage() {
-  return (
-    <AppShell title="Portfolio" subtitle="Track positions and claimables" scrollContent>
-      <div className="stack">
-        <PositionsPanel />
-      </div>
-    </AppShell>
-  );
+  redirect("/profile?view=portfolio");
 }

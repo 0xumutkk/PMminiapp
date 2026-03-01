@@ -132,7 +132,7 @@ export function MarketsBrowser() {
         {filteredMarkets.map((market) => (
           <Link
             key={market.id}
-            href={`/markets/${encodeURIComponent(market.id)}`}
+            href={`/feed?startAt=${encodeURIComponent(market.id)}`}
             className="market-list__link"
           >
             <article className="market-list__item">

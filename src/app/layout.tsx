@@ -132,12 +132,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 if (!urlValue) return false;
                 var parsed = parseUrl(urlValue);
                 if (!parsed) return false;
+                if (parsed.origin === window.location.origin) {
+                  if (parsed.pathname.indexOf("/_next/") === 0) return false;
+                  if (parsed.pathname.indexOf("/api/") === 0) return false;
+                }
                 var host = parsed.hostname.toLowerCase();
                 if (blockedHosts[host]) return true;
-                if (
-                  parsed.pathname.indexOf("/_next/static/webpack/") === 0 &&
-                  parsed.pathname.indexOf(".webpack.hot-update.json") !== -1
-                ) {
+                if (parsed.pathname.indexOf("/cdn-cgi/rum") === 0) {
                   return true;
                 }
                 return false;

@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent, type WheelEvent } from "react";
-import { MarketSnapshot } from "@/lib/market-types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MarketSnapshot } from "@/lib/market-types";
 import { MarketCard } from "@/components/market-card";
 
 type FeedState = {
@@ -11,9 +11,6 @@ type FeedState = {
 };
 
 const WINDOW_RADIUS = 2;
-const SWIPE_THRESHOLD_PX = 54;
-const WHEEL_THRESHOLD = 36;
-const NAV_LOCK_MS = 260;
 
 function sortSnapshot(snapshot: MarketSnapshot): MarketSnapshot {
   return {
@@ -27,21 +24,24 @@ function sortSnapshot(snapshot: MarketSnapshot): MarketSnapshot {
   };
 }
 
-export function VerticalMarketFeed() {
+type VerticalMarketFeedProps = {
+  initialSnapshot?: MarketSnapshot | null;
+  startAtMarketId?: string | null;
+};
+
+export function VerticalMarketFeed({ initialSnapshot = null, startAtMarketId = null }: VerticalMarketFeedProps) {
   const [state, setState] = useState<FeedState>({
-    loading: true,
+    loading: initialSnapshot === null,
     error: null,
-    snapshot: null
+    snapshot: initialSnapshot
   });
 
   const [activeIndex, setActiveIndex] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(680);
+  const startAppliedRef = useRef(false);
 
   const containerRef = useRef<HTMLElement | null>(null);
   const elementMapRef = useRef<Map<number, HTMLElement>>(new Map());
-  const touchStartYRef = useRef<number | null>(null);
-  const touchStartScrollTopRef = useRef(0);
-  const wheelLockedRef = useRef(false);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -150,9 +150,11 @@ export function VerticalMarketFeed() {
       connectStream();
     };
 
-    load().catch(() => {
-      // no-op
-    });
+    if (!initialSnapshot) {
+      load().catch(() => {
+        // no-op
+      });
+    }
 
     connectStream();
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -162,7 +164,7 @@ export function VerticalMarketFeed() {
       disconnectStream();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [initialSnapshot]);
 
   const markets = useMemo(() => state.snapshot?.markets ?? [], [state.snapshot]);
   const itemHeight = Math.max(1, viewportHeight);
@@ -173,13 +175,18 @@ export function VerticalMarketFeed() {
     }
   }, [activeIndex, markets.length]);
 
-  const startIndex = Math.max(0, activeIndex - WINDOW_RADIUS);
-  const endIndex = Math.min(markets.length, activeIndex + WINDOW_RADIUS + 1);
-
-  const topPad = startIndex * itemHeight;
-  const bottomPad = Math.max(0, (markets.length - endIndex) * itemHeight);
-
-  const visibleMarkets = useMemo(() => markets.slice(startIndex, endIndex), [endIndex, markets, startIndex]);
+  // Jump to the startAt market once markets are loaded.
+  useEffect(() => {
+    if (startAppliedRef.current || !startAtMarketId || markets.length === 0) return;
+    const idx = markets.findIndex((m) => m.id === startAtMarketId);
+    if (idx >= 0) {
+      startAppliedRef.current = true;
+      setActiveIndex(idx);
+      requestAnimationFrame(() => {
+        containerRef.current?.scrollTo({ top: idx * itemHeight, behavior: "auto" });
+      });
+    }
+  }, [markets, startAtMarketId, itemHeight]);
 
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
@@ -193,95 +200,7 @@ export function VerticalMarketFeed() {
     }
   }, [itemHeight, markets.length]);
 
-  const scrollToIndex = useCallback(
-    (nextIndex: number, behavior: ScrollBehavior = "smooth") => {
-      const container = containerRef.current;
-      if (!container || markets.length === 0) {
-        return;
-      }
 
-      const clampedIndex = Math.max(0, Math.min(markets.length - 1, nextIndex));
-      container.scrollTo({
-        top: clampedIndex * itemHeight,
-        behavior
-      });
-      setActiveIndex(clampedIndex);
-    },
-    [itemHeight, markets.length]
-  );
-
-  const navigateByDirection = useCallback(
-    (direction: -1 | 1) => {
-      scrollToIndex(activeIndex + direction);
-    },
-    [activeIndex, scrollToIndex]
-  );
-
-  const handleTouchStartCapture = useCallback((event: TouchEvent<HTMLElement>) => {
-    const point = event.touches[0];
-    touchStartYRef.current = point ? point.clientY : null;
-    touchStartScrollTopRef.current = containerRef.current?.scrollTop ?? 0;
-  }, []);
-
-  const handleTouchEndCapture = useCallback(
-    (event: TouchEvent<HTMLElement>) => {
-      const startY = touchStartYRef.current;
-      touchStartYRef.current = null;
-      if (startY === null) {
-        return;
-      }
-
-      const point = event.changedTouches[0];
-      if (!point) {
-        return;
-      }
-
-      const deltaY = point.clientY - startY;
-      if (Math.abs(deltaY) < SWIPE_THRESHOLD_PX) {
-        return;
-      }
-
-      const movedByNativeScroll = Math.abs((containerRef.current?.scrollTop ?? 0) - touchStartScrollTopRef.current);
-      if (movedByNativeScroll > itemHeight * 0.2) {
-        return;
-      }
-
-      navigateByDirection(deltaY < 0 ? 1 : -1);
-    },
-    [itemHeight, navigateByDirection]
-  );
-
-  const handleWheel = useCallback(
-    (event: WheelEvent<HTMLElement>) => {
-      if (Math.abs(event.deltaY) < WHEEL_THRESHOLD) {
-        return;
-      }
-
-      if (wheelLockedRef.current) {
-        event.preventDefault();
-        return;
-      }
-
-      wheelLockedRef.current = true;
-      event.preventDefault();
-
-      navigateByDirection(event.deltaY > 0 ? 1 : -1);
-
-      window.setTimeout(() => {
-        wheelLockedRef.current = false;
-      }, NAV_LOCK_MS);
-    },
-    [navigateByDirection]
-  );
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) {
-      return;
-    }
-
-    container.scrollTo({ top: activeIndex * itemHeight, behavior: "auto" });
-  }, [activeIndex, itemHeight]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -320,7 +239,7 @@ export function VerticalMarketFeed() {
     return () => {
       observer.disconnect();
     };
-  }, [endIndex, startIndex, visibleMarkets.length]);
+  }, [markets.length]);
 
   const setObservedNode = useCallback(
     (index: number) => (node: HTMLElement | null) => {
@@ -352,14 +271,9 @@ export function VerticalMarketFeed() {
       aria-live="polite"
       ref={containerRef}
       onScroll={handleScroll}
-      onTouchStartCapture={handleTouchStartCapture}
-      onTouchEndCapture={handleTouchEndCapture}
-      onWheel={handleWheel}
     >
-      <div aria-hidden style={{ height: topPad }} />
-
-      {visibleMarkets.map((market, offset) => {
-        const index = startIndex + offset;
+      {markets.map((market, index) => {
+        const isVisible = Math.abs(index - activeIndex) <= WINDOW_RADIUS + 1;
 
         return (
           <div
@@ -369,12 +283,10 @@ export function VerticalMarketFeed() {
             ref={setObservedNode(index)}
             style={{ height: itemHeight }}
           >
-            <MarketCard market={market} isActive={index === activeIndex} />
+            {isVisible && <MarketCard market={market} isActive={index === activeIndex} />}
           </div>
         );
       })}
-
-      <div aria-hidden style={{ height: bottomPad }} />
     </section>
   );
 }

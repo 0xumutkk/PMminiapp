@@ -2,6 +2,7 @@ import { isAddress } from "viem";
 
 export const MINIAPP_AUTH_COOKIE = "miniapp_auth_token";
 export const MINIAPP_AUTH_ADDRESS_COOKIE = "miniapp_auth_address";
+export const MINIAPP_AUTH_DOMAIN_COOKIE = "miniapp_auth_domain";
 
 export type MiniAppAuthClaims = {
   fid: number;
@@ -160,6 +161,13 @@ export function getAuthAddressFromRequest(request: Request) {
   return cookies.get(MINIAPP_AUTH_ADDRESS_COOKIE) ?? null;
 }
 
+export function getAuthDomainFromRequest(request: Request) {
+  const cookies = parseCookieHeader(request.headers.get("cookie"));
+  const raw = cookies.get(MINIAPP_AUTH_DOMAIN_COOKIE) ?? "";
+  const normalized = normalizeMiniAppDomain(raw);
+  return normalized || null;
+}
+
 function payloadToClaims(
   payload: Record<string, unknown>,
   addressFromSiwf?: string
@@ -289,15 +297,20 @@ function authCookieAttributes(maxAgeSeconds: number) {
 export function createAuthCookieHeader(
   token: string,
   maxAgeSeconds: number,
-  address?: string
+  address?: string,
+  verifiedDomain?: string
 ) {
   const attrs = authCookieAttributes(maxAgeSeconds);
   const tokenCookie = `${MINIAPP_AUTH_COOKIE}=${encodeURIComponent(token)}; ${attrs}`;
+  const normalizedDomain = normalizeMiniAppDomain(verifiedDomain ?? "");
+  const domainCookie = normalizedDomain
+    ? `${MINIAPP_AUTH_DOMAIN_COOKIE}=${encodeURIComponent(normalizedDomain)}; ${attrs}`
+    : null;
   if (address && isAddress(address)) {
     const addressCookie = `${MINIAPP_AUTH_ADDRESS_COOKIE}=${encodeURIComponent(address)}; ${attrs}`;
-    return [tokenCookie, addressCookie].join("\n");
+    return [tokenCookie, addressCookie, domainCookie].filter(Boolean).join("\n");
   }
-  return tokenCookie;
+  return [tokenCookie, domainCookie].filter(Boolean).join("\n");
 }
 
 export function clearAuthCookieHeader(): string[] {
@@ -308,7 +321,8 @@ export function clearAuthCookieHeader(): string[] {
   const attrs = `Path=/; HttpOnly; Max-Age=0;${sameSite}${secure}${partitioned}`;
   return [
     `${MINIAPP_AUTH_COOKIE}=; ${attrs}`,
-    `${MINIAPP_AUTH_ADDRESS_COOKIE}=; ${attrs}`
+    `${MINIAPP_AUTH_ADDRESS_COOKIE}=; ${attrs}`,
+    `${MINIAPP_AUTH_DOMAIN_COOKIE}=; ${attrs}`
   ];
 }
 

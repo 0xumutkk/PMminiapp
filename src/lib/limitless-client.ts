@@ -55,6 +55,11 @@ type LimitlessActiveMarketRow = {
   collateralToken?: unknown;
   settings?: unknown;
   markets?: unknown;
+  /** AMM market contract address (used as the trade contract for buyShares calls) */
+  address?: unknown;
+  /** ERC-1155 position token IDs: [YES, NO] */
+  positionIds?: unknown;
+  imageUrl?: unknown;
 };
 
 type LimitlessActiveMarketsResponse = {
@@ -157,7 +162,11 @@ function parseVolume(row: LimitlessActiveMarketRow) {
   return Number.isFinite(scaled) ? scaled : undefined;
 }
 
-function parseMinTradeSizeUsdc(row: LimitlessActiveMarketRow) {
+// minSize is expressed in shares × 1e6 (same scaling as takerAmount in EIP-712 orders).
+// Returns the raw share count so callers can compute USDC cost per side:
+//   YES cost = minShares × yesPrice
+//   NO  cost = minShares × noPrice
+function parseMinTradeShares(row: LimitlessActiveMarketRow) {
   const settings =
     typeof row.settings === "object" && row.settings !== null ? (row.settings as { minSize?: unknown }) : undefined;
   const minSizeRaw = settings?.minSize;
@@ -165,23 +174,47 @@ function parseMinTradeSizeUsdc(row: LimitlessActiveMarketRow) {
     return undefined;
   }
 
-  const collateral = typeof row.collateralToken === "object" && row.collateralToken !== null
-    ? (row.collateralToken as LimitlessCollateralToken)
-    : undefined;
-  const decimals = toNumber(collateral?.decimals) ?? 6;
+  // minSize is always scaled by 1e6 regardless of collateral decimals (shares, not USDC)
+  const SHARES_SCALE = 1e6;
 
-  const scaled =
+  const minShares =
     typeof minSizeRaw === "number"
-      ? minSizeRaw / 10 ** decimals
+      ? minSizeRaw / SHARES_SCALE
       : typeof minSizeRaw === "string"
-        ? Number(minSizeRaw) / 10 ** decimals
+        ? Number(minSizeRaw) / SHARES_SCALE
         : Number.NaN;
 
-  if (!Number.isFinite(scaled) || scaled <= 0) {
+  if (!Number.isFinite(minShares) || minShares <= 0) {
     return undefined;
   }
 
-  return Number(scaled.toFixed(6));
+  return minShares;
+}
+
+function parsePositionIds(raw: unknown): [string, string] | undefined {
+  if (!Array.isArray(raw) || raw.length < 2) {
+    return undefined;
+  }
+
+  const toDecimalString = (v: unknown): string | undefined => {
+    if (typeof v === "string" && /^\d+$/.test(v.trim())) return v.trim();
+    if (typeof v === "number" && Number.isFinite(v)) return String(Math.round(v));
+    return undefined;
+  };
+
+  const yes = toDecimalString(raw[0]);
+  const no = toDecimalString(raw[1]);
+  if (!yes || !no) return undefined;
+
+  // Validate they are safe to convert to BigInt
+  try {
+    BigInt(yes);
+    BigInt(no);
+  } catch {
+    return undefined;
+  }
+
+  return [yes, no];
 }
 
 function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
@@ -202,7 +235,9 @@ function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
   }
 
   const venue = typeof row.venue === "object" && row.venue !== null ? (row.venue as LimitlessVenue) : undefined;
-  const exchange = toString(venue?.exchange);
+  const exchange = toString(venue?.exchange)
+    // AMM markets expose the market's own contract address in row.address (venue is null)
+    ?? (typeof row.address === "string" && isAddress(row.address) ? row.address : undefined);
   const adapter = toString(venue?.adapter);
 
   return {
@@ -210,7 +245,7 @@ function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
     title,
     yesPrice: prices.yesPrice,
     noPrice: prices.noPrice,
-    minTradeSizeUsdc: parseMinTradeSizeUsdc(row),
+    minTradeShares: parseMinTradeShares(row),
     volume24h: parseVolume(row),
     endsAt: parseEndsAt(row),
     status: normalizeStatus(row.status, row.expired),
@@ -219,7 +254,9 @@ function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
       ...(adapter && isAddress(adapter) ? { venueAdapter: adapter } : {}),
       ...(marketRef ? { marketRef } : {})
     },
-    source: "limitless"
+    source: "limitless",
+    positionIds: parsePositionIds(row.positionIds),
+    imageUrl: toString(row.imageUrl)
   };
 }
 
@@ -229,9 +266,9 @@ function flattenRows(rows: LimitlessActiveMarketRow[]): LimitlessActiveMarketRow
   for (const row of rows) {
     const nested = Array.isArray(row.markets)
       ? row.markets.filter(
-          (market): market is LimitlessActiveMarketRow =>
-            typeof market === "object" && market !== null
-        )
+        (market): market is LimitlessActiveMarketRow =>
+          typeof market === "object" && market !== null
+      )
       : [];
 
     // Group rows may only hold metadata while nested rows contain tradable outcomes.
@@ -274,7 +311,7 @@ export function createLimitlessClient(): LimitlessClient {
     url.searchParams.set("page", String(page));
     url.searchParams.set("limit", String(limit));
     url.searchParams.set("sortBy", "ending_soon");
-    url.searchParams.set("tradeType", "clob");
+    url.searchParams.set("tradeType", "amm");
 
     const response = await fetchWithTimeout(url.toString());
     if (!response.ok) {

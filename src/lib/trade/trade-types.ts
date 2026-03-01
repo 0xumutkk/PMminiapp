@@ -19,6 +19,10 @@ export type BuildTradeIntentInput = TradeIntentRequest & {
   argMap?: string;
   executionPrice?: number;
   requireUsdcApprove?: boolean;
+  /** For AMM sell: ConditionalTokens contract to approve ERC-1155 tokens to the FPMM. */
+  conditionalTokensContract?: `0x${string}`;
+  /** For redeem: the conditionId from the FPMM's conditionIds(0). */
+  conditionId?: `0x${string}`;
 };
 
 export type PreparedCall = {

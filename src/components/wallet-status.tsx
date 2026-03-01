@@ -48,6 +48,10 @@ export function WalletStatus() {
     return <p className="wallet-status">Signing in...</p>;
   }
 
+  if (authStatus === "loading") {
+    return <p className="wallet-status">Checking session...</p>;
+  }
+
   if (!isAuthenticated) {
     return (
       <button className="wallet-connect-btn" onClick={() => void signIn()} type="button">

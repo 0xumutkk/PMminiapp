@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { isLikelyMiniAppHost, markMiniAppReady } from "@/lib/miniapp-sdk-safe";
+import {
+  getMiniAppSdk,
+  isLikelyMiniAppHost,
+  markMiniAppReady,
+} from "@/lib/miniapp-sdk-safe";
 
 export function useMiniAppReady() {
   const readyRef = useRef(false);
@@ -20,6 +24,9 @@ export function useMiniAppReady() {
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+    // Prefetch SDK immediately so markMiniAppReady has it ready
+    void getMiniAppSdk();
 
     async function attemptReady(attempt = 0, maxAttempts = 120) {
       if (cancelled || readyRef.current || inFlightRef.current) {

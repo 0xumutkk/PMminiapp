@@ -18,6 +18,7 @@ type ParsedFunctionSignature = {
 };
 
 const APPROVE_SIGNATURE = "function approve(address spender,uint256 value)";
+const SET_APPROVAL_FOR_ALL_SIGNATURE = "function setApprovalForAll(address operator,bool approved)";
 const BASE_USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const encodeDynamicFunctionData = encodeFunctionData as unknown as (parameters: {
   abi: unknown;
@@ -27,6 +28,7 @@ const encodeDynamicFunctionData = encodeFunctionData as unknown as (parameters: 
 const SUPPORTED_ROLES = new Set([
   "market",
   "side",
+  "outcome-index",
   "amount",
   "wallet",
   "recipient",
@@ -56,7 +58,7 @@ function parseFunctionSignature(signature: string): ParsedFunctionSignature {
   };
 }
 
-function parseAmount(amountUsdc: string | undefined, decimals: number) {
+function parseAmount(amountUsdc: string | undefined, decimals: number, action?: string) {
   if (!amountUsdc) {
     throw new Error("amountUsdc is required for this action");
   }
@@ -70,11 +72,17 @@ function parseAmount(amountUsdc: string | undefined, decimals: number) {
     throw new Error("amountUsdc must be greater than 0");
   }
 
-  const minAmount = Number(process.env.TRADE_MIN_USDC ?? "1");
   const maxAmount = Number(process.env.TRADE_MAX_USDC ?? "1000");
+  if (amount > maxAmount) {
+    throw new Error(`amountUsdc must not exceed ${maxAmount}`);
+  }
 
-  if (amount < minAmount || amount > maxAmount) {
-    throw new Error(`amountUsdc must be between ${minAmount} and ${maxAmount}`);
+  // Minimum only applies to buy — sell/redeem must allow any positive position size.
+  if (!action || action === "buy") {
+    const minAmount = Number(process.env.TRADE_MIN_USDC ?? "1");
+    if (amount < minAmount) {
+      throw new Error(`amountUsdc must be at least ${minAmount} for a buy`);
+    }
   }
 
   return parseUnits(amountUsdc, decimals);
@@ -160,6 +168,17 @@ function convertArg(role: string, argType: string, request: TradeIntentRequest, 
     }
 
     return request.side;
+  }
+
+  // AMM FPMM outcomeIndex: 0 = YES, 1 = NO (opposite of the `side` uint role above)
+  if (role === "outcome-index") {
+    if (!request.side) {
+      throw new Error("side is required for outcome-index role");
+    }
+    if (argType.startsWith("uint")) {
+      return request.side === "yes" ? 0n : 1n;
+    }
+    throw new Error(`outcome-index role only supports uint types, got: ${argType}`);
   }
 
   if (role === "amount") {
@@ -290,7 +309,9 @@ function resolveActionSignature(action: TradeIntentAction, explicitSignature?: s
   }
 
   if (action === "buy") {
-    return process.env.LIMITLESS_TRADE_FUNCTION_SIGNATURE ?? "buyShares(bytes32,bool,uint256)";
+    // Limitless AMM contract: buy(uint256 investmentAmount, uint256 outcomeIndex, uint256 minOutcomeTokensToBuy)
+    // outcomeIndex: 0 = YES, 1 = NO  |  minOutcomeTokensToBuy: 0 = no slippage guard (market order)
+    return process.env.LIMITLESS_TRADE_FUNCTION_SIGNATURE ?? "buy(uint256,uint256,uint256)";
   }
 
   if (action === "sell") {
@@ -306,7 +327,9 @@ function resolveActionArgMap(action: TradeIntentAction, explicitArgMap?: string)
   }
 
   if (action === "buy") {
-    return process.env.LIMITLESS_TRADE_ARG_MAP ?? "market,side,amount";
+    // Limitless AMM contract: buy(uint256 investmentAmount, uint256 outcomeIndex, uint256 minOutcomeTokensToBuy)
+    // outcomeIndex: 0 = YES, 1 = NO  |  minOutcomeTokensToBuy: 0 = no slippage guard (market order)
+    return process.env.LIMITLESS_TRADE_ARG_MAP ?? "amount,outcome-index,zero";
   }
 
   if (action === "sell") {
@@ -337,6 +360,48 @@ function shouldIncludeUsdcApprove(action: TradeIntentAction, explicitFlag?: bool
 
 export function buildTradeIntent(input: BuildTradeIntentInput): TradeIntentResponse {
   const contracts = resolveTokens(input);
+
+  // ──── REDEEM: CT.redeemPositions(collateral, parentCollectionId, conditionId, indexSets) ────
+  if (input.action === "redeem" && input.conditionId) {
+    const REDEEM_ABI = parseAbi([
+      "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)"
+    ]);
+
+    const redeemData = encodeFunctionData({
+      abi: REDEEM_ABI,
+      functionName: "redeemPositions",
+      args: [
+        contracts.usdcToken,       // collateral = USDC
+        "0x0000000000000000000000000000000000000000000000000000000000000000", // parentCollectionId
+        input.conditionId,         // conditionId from FPMM
+        [1n, 2n]                   // indexSets: YES=1, NO=2
+      ]
+    });
+
+    return {
+      mode: "onchain",
+      version: "v1",
+      calls: [
+        {
+          to: contracts.tradeContract, // = CT address
+          data: redeemData,
+          value: "0"
+        }
+      ],
+      meta: {
+        action: "redeem",
+        marketId: input.marketId,
+        side: input.side,
+        amountUsdc: input.amountUsdc,
+        amountUnits: undefined,
+        executionPrice: undefined,
+        expectedPrice: undefined,
+        maxSlippageBps: undefined
+      }
+    };
+  }
+
+  // ──── BUY / SELL ────
   const signature = resolveActionSignature(input.action, input.functionSignature);
   if (!signature) {
     throw new Error(`Function signature is missing for ${input.action} action`);
@@ -353,7 +418,7 @@ export function buildTradeIntent(input: BuildTradeIntentInput): TradeIntentRespo
     .map((item) => item.trim());
   const needsAmount = argRoles.includes("amount");
   const usdcDecimals = Number(process.env.USDC_DECIMALS ?? "6");
-  const amountUnits = needsAmount ? parseAmount(input.amountUsdc, usdcDecimals) : null;
+  const amountUnits = needsAmount ? parseAmount(input.amountUsdc, usdcDecimals, input.action) : null;
 
   const tradeArgs = buildTradeArgs(parsedSignature, input, amountUnits, argMap);
   const tradeData = encodeDynamicFunctionData({
@@ -363,6 +428,8 @@ export function buildTradeIntent(input: BuildTradeIntentInput): TradeIntentRespo
   });
 
   const calls: PreparedCall[] = [];
+
+  // BUY: prepend USDC ERC-20 approve
   if (shouldIncludeUsdcApprove(input.action, input.requireUsdcApprove)) {
     if (amountUnits === null) {
       throw new Error("USDC approve requires amountUsdc via amount role");
@@ -377,6 +444,21 @@ export function buildTradeIntent(input: BuildTradeIntentInput): TradeIntentRespo
     calls.push({
       to: contracts.usdcToken,
       data: approveData,
+      value: "0"
+    });
+  }
+
+  // SELL (AMM): prepend ERC-1155 setApprovalForAll on ConditionalTokens
+  if (input.conditionalTokensContract && isAddress(input.conditionalTokensContract)) {
+    const setApprovalData = encodeFunctionData({
+      abi: parseAbi([SET_APPROVAL_FOR_ALL_SIGNATURE]),
+      functionName: "setApprovalForAll",
+      args: [contracts.tradeContract, true]
+    });
+
+    calls.push({
+      to: input.conditionalTokensContract,
+      data: setApprovalData,
       value: "0"
     });
   }

@@ -54,13 +54,6 @@ export function useMiniAppContext() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!isLikelyMiniAppHost()) {
-      setContext(null);
-      setLoaded(true);
-      return () => {
-        cancelled = true;
-      };
-    }
 
     const fallbackTimer = setTimeout(() => {
       if (!cancelled) {

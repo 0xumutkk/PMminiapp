@@ -2,6 +2,8 @@ import { buildTradeIntent } from "@/lib/trade/build-intent";
 import { getMarketIndexer } from "@/lib/indexer";
 import { Market } from "@/lib/market-types";
 import { fetchPublicPortfolioPositions } from "@/lib/portfolio/limitless-portfolio";
+import { fetchOnchainAmmPositions, getConditionalTokensAddress, fetchFpmmAddressesFromHistory } from "@/lib/portfolio/onchain-portfolio";
+import type { AmmMarketRef } from "@/lib/portfolio/onchain-portfolio";
 import { TradeIntentAction, TradeIntentRequest, TradeIntentResponse } from "@/lib/trade/trade-types";
 import { logEvent } from "@/lib/observability";
 import { isAddressAllowedForBeta, isBetaModeEnabled } from "@/lib/security/beta-access";
@@ -20,6 +22,80 @@ import { base } from "viem/chains";
 import { createPublicClient, formatUnits, http, isAddress, parseAbi, parseUnits } from "viem";
 
 export const runtime = "nodejs";
+
+// FPMM view function to check if a given returnAmount is feasible before submitting sell.
+const FPMM_CALC_SELL_ABI = parseAbi([
+  "function calcSellAmount(uint256 investmentAmount, uint256 outcomeIndex) view returns (uint256 outcomeTokenSellAmount)"
+]);
+
+/**
+ * Finds the maximum viable returnAmount (USDC) for an FPMM sell.
+ * FPMM `sell(returnAmount, outcome, maxTokens)` reverts with SafeMath if the
+ * pool does not have enough liquidity to honour the requested USDC return.
+ * This helper does a binary-search preflight using calcSellAmount() to avoid that.
+ *
+ * Returns the adjusted amountUsdc (6-decimal string) or throws if pool is dry.
+ */
+async function resolveViableSellAmount(
+  fpmmAddress: `0x${string}`,
+  outcomeIndex: bigint,
+  maxSharesToBurnUnits: bigint,
+  decimals: number
+): Promise<{ amountUsdc: string; maxTokensRaw: string }> {
+  const rpcUrl = process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org";
+  const client = createPublicClient({ chain: base, transport: http(rpcUrl) });
+
+  // Fast binary search to find the maximum `returnAmount` (USDC collateral output)
+  // such that `calcSellAmount(returnAmount)` <= `maxSharesToBurnUnits`.
+  let low = 0n;
+  let high = maxSharesToBurnUnits;
+  let bestReturn = 0n;
+
+  // 15 iterations provides excellent precision over the curve without RPC timeouts
+  for (let i = 0; i < 15; i++) {
+    const mid = low + (high - low) / 2n;
+    if (mid === 0n) break;
+
+    try {
+      const requiredTokens = await client.readContract({
+        address: fpmmAddress,
+        abi: FPMM_CALC_SELL_ABI,
+        functionName: "calcSellAmount",
+        args: [mid, outcomeIndex]
+      });
+
+      if (requiredTokens <= maxSharesToBurnUnits) {
+        bestReturn = mid;
+        low = mid + 1n; // Safe, try to extract more USDC payout
+      } else {
+        high = mid - 1n; // Invariant breached, Requires too many shares
+      }
+    } catch {
+      // Reverted: likely means we requested more USDC than the pool's whole balance
+      high = mid - 1n;
+    }
+  }
+
+  if (bestReturn === 0n) {
+    throw new Error(
+      "Pool has insufficient liquidity to sell this position. " +
+      "You may need to wait until the market resolves to redeem your tokens."
+    );
+  }
+
+  // Authorize burning exactly the units the user asked to sell, 
+  // but ask for 1% less USDC as a slippage safety buffer to ensure execution succeeds.
+  const safeReturnUnits = (bestReturn * 99n) / 100n;
+
+  if (safeReturnUnits === 0n) {
+    throw new Error("Fractional sell amount too small to process over slippage bounds.");
+  }
+
+  return {
+    amountUsdc: formatUnits(safeReturnUnits, decimals),
+    maxTokensRaw: maxSharesToBurnUnits.toString()
+  };
+}
 
 function badRequest(message: string, requestId: string, headers: Record<string, string>) {
   return Response.json(
@@ -397,6 +473,8 @@ export async function POST(request: Request) {
     let executionPrice: number | undefined;
     let slippageBps: number | null = null;
     let intentMarketId = marketId;
+    let conditionalTokensContract: `0x${string}` | undefined;
+    let conditionId: `0x${string}` | undefined;
 
     if (action === "buy") {
       if (!market) {
@@ -438,13 +516,16 @@ export async function POST(request: Request) {
         }
       }
 
-      if (amountUsdc && market.minTradeSizeUsdc) {
+      if (amountUsdc && market.minTradeShares) {
+        // Use the correct price for the requested side so YES and NO thresholds differ
+        const sidePrice = side === "yes" ? market.yesPrice : market.noPrice;
+        const minUsdc = market.minTradeShares * sidePrice;
         const requestedUnits = parseUsdcUnits(amountUsdc, usdcDecimals);
-        const minimumUnits = parseUsdcUnits(String(market.minTradeSizeUsdc), usdcDecimals);
+        const minimumUnits = parseUsdcUnits(String(Number(minUsdc.toFixed(usdcDecimals))), usdcDecimals);
         if (requestedUnits !== null && minimumUnits !== null && requestedUnits < minimumUnits) {
           return Response.json(
             {
-              error: `Minimum stake for this market is ${formatAmountForError(market.minTradeSizeUsdc)} USDC.`,
+              error: `Minimum stake for ${side.toUpperCase()} is ${formatAmountForError(minUsdc)} USDC.`,
               requestId
             },
             {
@@ -474,34 +555,60 @@ export async function POST(request: Request) {
         requireUsdcApprove = true;
       }
     } else if (action === "sell") {
-      const snapshot = await fetchPublicPortfolioPositions(verifiedWalletAddress);
-      const activePosition = snapshot.active.find(
+      // 1. Try Limitless portfolio API first
+      let snapshot = await fetchPublicPortfolioPositions(verifiedWalletAddress);
+
+      // 2. If no positions from Limitless API, do comprehensive on-chain lookup.
+      //    This checks BOTH the current market's FPMM AND any historical FPMMs
+      //    (the user may have bought on an older FPMM instance of the same market).
+      if (snapshot.active.length === 0 && snapshot.settled.length === 0) {
+        const historyAddresses = await fetchFpmmAddressesFromHistory(verifiedWalletAddress);
+        const fpmmAddresses = new Set<string>(historyAddresses);
+
+        // Also include the current market's FPMM if available
+        if (market?.tradeVenue?.venueExchange) {
+          fpmmAddresses.add(market.tradeVenue.venueExchange);
+        }
+
+        const ammMarkets: AmmMarketRef[] = Array.from(fpmmAddresses).map((addr) => ({
+          id: addr,      // use address as id — matched below by side only
+          slug: addr,
+          title: "Position",
+          contractAddress: addr,
+          yesPrice: market?.yesPrice ?? 0.5,
+          noPrice: market?.noPrice ?? 0.5
+        }));
+
+        if (ammMarkets.length > 0) {
+          snapshot = await fetchOnchainAmmPositions(
+            verifiedWalletAddress as `0x${string}`,
+            ammMarkets
+          );
+        }
+      }
+
+      // 3. Find the active position for the requested side.
+      //    Try exact market slug match first; fall back to side-only match
+      //    (historical FPMM positions use address as marketId, not slug).
+      let activePosition = snapshot.active.find(
         (position) => matchesPositionMarket(position, marketId) && position.side === side
       );
+      if (!activePosition && side) {
+        activePosition = snapshot.active.find((p) => p.side === side);
+      }
+
       if (!activePosition) {
         return Response.json(
-          {
-            error: "No active position found for this market/side.",
-            requestId
-          },
-          {
-            status: 409,
-            headers: rateHeaders
-          }
+          { error: "No active position found for this market/side.", requestId },
+          { status: 409, headers: rateHeaders }
         );
       }
 
       const maxSellUnits = parseUsdcUnits(activePosition.marketValueUsdc, usdcDecimals);
       if (maxSellUnits === null || maxSellUnits <= 0n) {
         return Response.json(
-          {
-            error: "Active position has no sellable exposure.",
-            requestId
-          },
-          {
-            status: 409,
-            headers: rateHeaders
-          }
+          { error: "Active position has no sellable exposure.", requestId },
+          { status: 409, headers: rateHeaders }
         );
       }
 
@@ -515,39 +622,148 @@ export async function POST(request: Request) {
       amountUsdc = formatUsdcAmount(boundedSellUnits, usdcDecimals);
       intentMarketId = activePosition.marketId || activePosition.marketSlug || marketId;
 
-      tradeContract =
-        market?.tradeVenue?.venueExchange ??
-        market?.tradeVenue?.venueAdapter ??
-        process.env.LIMITLESS_SELL_CONTRACT_ADDRESS ??
-        process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
-      functionSignature = process.env.LIMITLESS_SELL_FUNCTION_SIGNATURE;
-      argMap = process.env.LIMITLESS_SELL_ARG_MAP;
-      requireUsdcApprove = process.env.SELL_REQUIRE_USDC_APPROVE === "true";
+      // 4. Use the FPMM that actually holds the position as trade contract.
+      //    If marketId is an on-chain address → it's a historical FPMM (use it directly).
+      //    Otherwise fall back to current market's venue.
+      if (isAddress(activePosition.marketId)) {
+        tradeContract = activePosition.marketId as `0x${string}`;
+      } else {
+        tradeContract =
+          market?.tradeVenue?.venueExchange ??
+          market?.tradeVenue?.venueAdapter ??
+          process.env.LIMITLESS_SELL_CONTRACT_ADDRESS ??
+          process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
+      }
+
+      // AMM FPMM sell: sell(returnAmount, outcomeIndex, maxOutcomeTokensToSell)
+      functionSignature =
+        process.env.LIMITLESS_SELL_FUNCTION_SIGNATURE ?? "sell(uint256,uint256,uint256)";
+      argMap = process.env.LIMITLESS_SELL_ARG_MAP ?? "amount,outcome-index,const:99999999999999999999";
+      requireUsdcApprove = false;
       executionPrice = market ? (side === "yes" ? market.yesPrice : market.noPrice) : undefined;
+
+      // 4b. Preflight: find the max viable returnAmount the pool can honour.
+      //     FPMM sell() reverts with SafeMath if returnAmount > pool's liquidity.
+      //     Only applies to AMM sell (sell(uint256,uint256,uint256)), not CLOB sellShares.
+      const isAmmSell =
+        (functionSignature ?? "").toLowerCase().startsWith("sell(uint256") &&
+        !!process.env.NEXT_PUBLIC_BASE_RPC_URL &&
+        tradeContract &&
+        isAddress(tradeContract) &&
+        !!side;
+
+      if (isAmmSell) {
+        const outcomeIdx = side === "yes" ? 0n : 1n;
+        let dynamicMaxTokensRaw = "99999999999999999999"; // Fallback
+        try {
+          const viable = await resolveViableSellAmount(
+            tradeContract as `0x${string}`,
+            outcomeIdx,
+            boundedSellUnits,
+            usdcDecimals
+          );
+          amountUsdc = viable.amountUsdc;
+          dynamicMaxTokensRaw = viable.maxTokensRaw;
+        } catch (liquErr) {
+          const msg = liquErr instanceof Error ? liquErr.message : "Insufficient pool liquidity for sell.";
+          return Response.json({ error: msg, requestId }, { status: 409, headers: rateHeaders });
+        }
+
+        // Dynamically override the maxTokensToSell constant injected by ENV with the real
+        // mathematically proven requiredTokens limit to fix SafeMath Subtraction Overflow
+        argMap = argMap.replace("const:99999999999999999999", `const:${dynamicMaxTokensRaw}`);
+      }
+
+      // 5. Fetch ConditionalTokens contract for ERC-1155 setApprovalForAll
+      if (tradeContract && isAddress(tradeContract)) {
+        try {
+          conditionalTokensContract = await getConditionalTokensAddress(tradeContract as `0x${string}`);
+        } catch {
+          // Non-fatal: proceed without pre-approval if CT address unavailable
+        }
+      }
     } else {
-      const snapshot = await fetchPublicPortfolioPositions(verifiedWalletAddress);
-      const claimablePosition = snapshot.settled.find(
+      // Redeem action: find a claimable settled position.
+      // 1. Try Limitless portfolio API first.
+      let snapshot = await fetchPublicPortfolioPositions(verifiedWalletAddress);
+
+      // 2. If no settled positions from API, fall back to on-chain lookup.
+      if (snapshot.settled.length === 0) {
+        const historyAddresses = await fetchFpmmAddressesFromHistory(verifiedWalletAddress);
+        const fpmmAddresses = new Set<string>(historyAddresses);
+        if (market?.tradeVenue?.venueExchange) {
+          fpmmAddresses.add(market.tradeVenue.venueExchange);
+        }
+
+        const ammMarkets: AmmMarketRef[] = Array.from(fpmmAddresses).map((addr) => ({
+          id: addr,
+          slug: addr,
+          title: "Position",
+          contractAddress: addr,
+          yesPrice: market?.yesPrice ?? 0.5,
+          noPrice: market?.noPrice ?? 0.5
+        }));
+
+        if (ammMarkets.length > 0) {
+          snapshot = await fetchOnchainAmmPositions(
+            verifiedWalletAddress as `0x${string}`,
+            ammMarkets
+          );
+        }
+      }
+
+      // 3. Find claimable settled position — try slug match first, then side-only.
+      let claimablePosition = snapshot.settled.find(
         (position) =>
           matchesPositionMarket(position, marketId) &&
           position.side === side &&
           position.claimable
       );
+      if (!claimablePosition && side) {
+        claimablePosition = snapshot.settled.find((p) => p.side === side && p.claimable);
+      }
+
       if (!claimablePosition) {
         return Response.json(
-          {
-            error: "No claimable settled position found for this market/side.",
-            requestId
-          },
-          {
-            status: 409,
-            headers: rateHeaders
-          }
+          { error: "No claimable settled position found for this market/side.", requestId },
+          { status: 409, headers: rateHeaders }
         );
       }
 
-      tradeContract =
-        process.env.LIMITLESS_REDEEM_CONTRACT_ADDRESS ??
-        process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
+      // 4. Use the FPMM that holds the position as trade contract.
+      let fpmmAddr: `0x${string}` | undefined;
+      if (isAddress(claimablePosition.marketId)) {
+        fpmmAddr = claimablePosition.marketId as `0x${string}`;
+      }
+
+      // For AMM markets, redeem uses CT.redeemPositions() not the FPMM.
+      // We need the ConditionalTokens contract address AND the conditionId.
+      if (fpmmAddr) {
+        try {
+          const rpcUrl = process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org";
+          const viemClient = createPublicClient({ chain: base, transport: http(rpcUrl) });
+          const [ctAddr, cid] = await viemClient.multicall({
+            contracts: [
+              { address: fpmmAddr, abi: parseAbi(["function conditionalTokens() view returns (address)"]), functionName: "conditionalTokens" },
+              { address: fpmmAddr, abi: parseAbi(["function conditionIds(uint256) view returns (bytes32)"]), functionName: "conditionIds", args: [0n] }
+            ],
+            allowFailure: false
+          });
+          tradeContract = ctAddr;
+          conditionId = cid as `0x${string}`;
+          conditionalTokensContract = ctAddr;
+        } catch {
+          // Fallback to env-based contract
+          tradeContract =
+            process.env.LIMITLESS_REDEEM_CONTRACT_ADDRESS ??
+            process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
+        }
+      } else {
+        tradeContract =
+          process.env.LIMITLESS_REDEEM_CONTRACT_ADDRESS ??
+          process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
+      }
+
       functionSignature = process.env.LIMITLESS_REDEEM_FUNCTION_SIGNATURE;
       argMap = process.env.LIMITLESS_REDEEM_ARG_MAP;
       requireUsdcApprove = false;
@@ -616,7 +832,9 @@ export async function POST(request: Request) {
       executionPrice,
       expectedPrice: expectedPrice ?? undefined,
       maxSlippageBps: action === "buy" || action === "sell" ? resolvedMaxSlippageBps : undefined,
-      requireUsdcApprove
+      requireUsdcApprove,
+      conditionalTokensContract,
+      conditionId
     });
 
     const response: TradeIntentResponse = intent;

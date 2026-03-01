@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, useCallback, type CSSProperties } from "react";
 import { Market } from "@/lib/market-types";
 import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
@@ -225,7 +225,23 @@ function CloseIcon() {
   );
 }
 
-const SLIPPAGE_PRESETS = [100, 200, 300, 500] as const;
+
+
+function ChevronUpIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden style={{ width: 16, height: 16 }}>
+      <path d="M18 15l-6-6-6 6" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden style={{ width: 16, height: 16 }}>
+      <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 function formatTxHash(hash: string) {
   return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
@@ -233,8 +249,9 @@ function formatTxHash(hash: string) {
 
 export function MarketCard({ market, isActive }: { market: Market; isActive: boolean }) {
   const [amountUsdc, setAmountUsdc] = useState("5");
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const [maxSlippageBps, setMaxSlippageBps] = useState(200);
+  const [nowMs, setNowMs] = useState(0);
+  const [isMounted, setIsMounted] = useState(false);
+  const maxSlippageBps = 200;
   const [busySince, setBusySince] = useState<number | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -244,7 +261,18 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
   const topic = useMemo(() => inferTopic(market.title), [market.title]);
   const backdropStyle = useMemo(() => getBackdropStyle(market.id, topic), [market.id, topic]);
 
+  const adjustStake = useCallback((delta: number) => {
+    setAmountUsdc((prev) => {
+      let current = Number(prev);
+      if (Number.isNaN(current)) current = 0;
+      const next = Math.max(1, current + delta);
+      return next.toString();
+    });
+  }, []);
+
   useEffect(() => {
+    setNowMs(Date.now());
+    setIsMounted(true);
     if (!isActive) {
       return;
     }
@@ -273,19 +301,20 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
   }, [busySince, state.status]);
 
   useEffect(() => {
-    const minStake = market.minTradeSizeUsdc;
-    if (!minStake) {
+    const minShares = market.minTradeShares;
+    if (!minShares) {
       return;
     }
-
+    // Pre-fill with the YES minimum as a sensible default
+    const minUsdc = minShares * market.yesPrice;
     setAmountUsdc((current) => {
       const parsed = Number(current);
-      if (!Number.isFinite(parsed) || parsed < minStake) {
-        return String(minStake);
+      if (!Number.isFinite(parsed) || parsed < minUsdc) {
+        return String(Number(minUsdc.toFixed(2)));
       }
       return current;
     });
-  }, [market.id, market.minTradeSizeUsdc]);
+  }, [market.id, market.minTradeShares, market.yesPrice]);
 
   async function onTrade(side: "yes" | "no") {
     const parsedAmount = Number(amountUsdc);
@@ -294,9 +323,15 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
       return;
     }
 
-    if (market.minTradeSizeUsdc && parsedAmount < market.minTradeSizeUsdc) {
-      setLocalError(`Minimum stake is ${market.minTradeSizeUsdc.toLocaleString("en-US")} USDC.`);
-      return;
+    if (market.minTradeShares) {
+      const price = side === "yes" ? market.yesPrice : market.noPrice;
+      const minUsdc = market.minTradeShares * price;
+      if (parsedAmount < minUsdc) {
+        setLocalError(
+          `Minimum stake for ${side.toUpperCase()} is ${minUsdc.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDC.`
+        );
+        return;
+      }
     }
 
     setLocalError(null);
@@ -329,18 +364,26 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
       ? authStatus === "loading"
         ? "Checking sign-in..."
         : authStatus === "authenticating"
-        ? "Signing in..."
-        : "Sign in to place a bet."
-    : localError
-      ? localError
-    : state.status === "failed"
-      ? state.error ?? "Trade failed"
-      : "";
-  const slippagePercent = (maxSlippageBps / 100).toFixed(2);
+          ? "Signing in..."
+          : "Sign in to place a bet."
+      : localError
+        ? localError
+        : state.status === "failed"
+          ? state.error ?? "Trade failed"
+          : "";
+
 
   return (
     <article className="market-card" data-active={isActive ? "true" : "false"}>
-      <div className="market-card__bg" style={backdropStyle} aria-hidden />
+      <div className="market-card__bg" style={backdropStyle} aria-hidden>
+        {market.imageUrl && (
+          <img
+            src={market.imageUrl}
+            alt=""
+            className="market-card__image"
+          />
+        )}
+      </div>
       <div className="market-card__veil" aria-hidden />
 
       <header className="market-card__top-controls">
@@ -378,57 +421,34 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
       </aside>
 
       <section className="market-card__content">
-        <span className="trend-pill">
-          <TrendIcon />
-          TRENDING
-        </span>
+        <div className="market-card__meta-row" style={{ gap: '8px', marginBottom: '8px' }}>
+          <span className="trend-pill">Trending</span>
+          <span className="percent-pill">{formatPercent(market.yesPrice)}</span>
+          <span className="top-meta-chip">Ends {formatCountdown(market.endsAt, nowMs)}</span>
+          <span className="top-meta-chip">Vol. {formatCompactNumber(market.volume24h)}</span>
+        </div>
 
         <h2 className="market-card__title">{market.title}</h2>
 
-        <div className="market-card__meta-row">
-          <span className="yes-pill">{formatPercent(market.yesPrice)} YES</span>
-          <span className="meta-item">
-            <ClockIcon />
-            {formatCountdown(market.endsAt, nowMs)}
-          </span>
-          <span className="meta-item">
-            <UsersIcon />
-            {participants}
-          </span>
-        </div>
-
-        <label className="stake-control" htmlFor={`amount-${market.id}`}>
-          <span>Stake</span>
-          <input
-            id={`amount-${market.id}`}
-            inputMode="decimal"
-            value={amountUsdc}
-            onChange={(event) => setAmountUsdc(event.target.value)}
-            disabled={isBusy}
-            aria-label="Trade size in USDC"
-          />
-          <span>USDC</span>
-        </label>
-        {market.minTradeSizeUsdc ? (
-          <p className="stake-min-hint">Min stake: {market.minTradeSizeUsdc.toLocaleString("en-US")} USDC</p>
-        ) : null}
-
-        <div className="slippage-control" role="group" aria-label="Max slippage">
-          <span>Slippage {slippagePercent}%</span>
-          <div className="slippage-control__options">
-            {SLIPPAGE_PRESETS.map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                className={`slippage-control__btn${preset === maxSlippageBps ? " slippage-control__btn--active" : ""}`}
-                onClick={() => setMaxSlippageBps(preset)}
-                disabled={isBusy}
-                aria-pressed={preset === maxSlippageBps}
-              >
-                {(preset / 100).toFixed(2)}%
-              </button>
-            ))}
+        <div className="stake-presets" style={{ marginTop: '16px', marginBottom: '16px' }}>
+          <div className="stake-control">
+            <span>Stake</span>
+            <button type="button" className="stake-preset-btn" style={{ background: 'rgba(255,255,255,0.15)', borderRadius: '999px', padding: '4px 12px' }}>
+              ${amountUsdc}
+            </button>
           </div>
+          {[5, 50, 100, 150].map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              className="stake-preset-btn"
+              style={{ background: amountUsdc === preset.toString() ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)', borderRadius: '999px' }}
+              onClick={() => setAmountUsdc(preset.toString())}
+              disabled={isBusy}
+            >
+              ${preset}
+            </button>
+          ))}
         </div>
 
         {isConnected && authStatus !== "loading" && !isAuthenticated ? (
@@ -437,6 +457,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
             className="market-auth-btn"
             onClick={() => void signIn()}
             disabled={authStatus === "authenticating"}
+            style={{ width: '100%', marginBottom: '12px' }}
           >
             {authStatus === "authenticating" ? "Signing in..." : "Sign in to trade"}
           </button>
@@ -449,8 +470,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
             onClick={() => void onTrade("yes")}
             disabled={isBusy || !isConnected || !isAuthenticated}
           >
-            <CheckIcon />
-            YES · {formatPercent(market.yesPrice)}
+            Yes {formatPercent(market.yesPrice)}
           </button>
           <button
             type="button"
@@ -458,8 +478,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
             onClick={() => void onTrade("no")}
             disabled={isBusy || !isConnected || !isAuthenticated}
           >
-            <CloseIcon />
-            NO · {formatPercent(market.noPrice)}
+            No {formatPercent(market.noPrice)}
           </button>
         </div>
 

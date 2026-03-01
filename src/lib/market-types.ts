@@ -13,12 +13,16 @@ export type Market = {
   title: string;
   yesPrice: number;
   noPrice: number;
-  minTradeSizeUsdc?: number;
+  /** Minimum order size in shares (raw, not scaled). Multiply by yesPrice or noPrice to get USDC cost. */
+  minTradeShares?: number;
   volume24h?: number;
   endsAt?: string;
   status: MarketStatus;
   tradeVenue?: MarketTradeVenue;
+  /** ERC-1155 position token IDs: [YES tokenId, NO tokenId] as decimal strings */
+  positionIds?: [string, string];
   source: "limitless";
+  imageUrl?: string;
 };
 
 export type MarketSnapshot = {

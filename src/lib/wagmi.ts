@@ -1,6 +1,6 @@
 import { createConfig, http } from "wagmi";
 import { base } from "wagmi/chains";
-import { injected } from "wagmi/connectors";
+import { injected } from "@wagmi/core";
 import { farcasterMiniApp } from "@farcaster/miniapp-wagmi-connector";
 
 export const wagmiConfig = createConfig({

@@ -157,9 +157,9 @@ export function useTradeExecutor() {
         currentAction: current.pendingTrade?.action ?? current.currentAction,
         lastConfirmedTrade: current.pendingTrade
           ? {
-              ...current.pendingTrade,
-              confirmedAt: new Date().toISOString()
-            }
+            ...current.pendingTrade,
+            confirmedAt: new Date().toISOString()
+          }
           : current.lastConfirmedTrade,
         pendingTrade: null
       }));
@@ -231,21 +231,21 @@ export function useTradeExecutor() {
         const body = (await response.json()) as
           | TradeIntentResponse
           | {
-              error?: string;
-              guard?: {
-                expectedPrice?: number;
-                executionPrice?: number;
-                slippageBps?: number;
-                maxSlippageBps?: number;
-              };
+            error?: string;
+            guard?: {
+              expectedPrice?: number;
+              executionPrice?: number;
+              slippageBps?: number;
+              maxSlippageBps?: number;
             };
+          };
 
         if (!response.ok) {
           const guardMessage =
             "guard" in body && body.guard
               ? ` Expected ${Number(body.guard.expectedPrice ?? 0).toFixed(3)}, current ${Number(
-                  body.guard.executionPrice ?? 0
-                ).toFixed(3)}, slippage ${body.guard.slippageBps ?? "-"}bps (max ${body.guard.maxSlippageBps ?? "-"}bps).`
+                body.guard.executionPrice ?? 0
+              ).toFixed(3)}, slippage ${body.guard.slippageBps ?? "-"}bps (max ${body.guard.maxSlippageBps ?? "-"}bps).`
               : "";
           throw new Error(
             (("error" in body && body.error) || `Trade intent failed with ${response.status}`) + guardMessage
@@ -326,10 +326,12 @@ export function useTradeExecutor() {
               submittedCalls: txHashes.length,
               txHashes: [...txHashes]
             }));
-          }
 
-          if (publicClient) {
-            for (const hash of txHashes) {
+            // Crucial for non-batched wallets: We must wait for this transaction to be mined
+            // before asking the wallet to sign the next one. Otherwise, the wallet's local
+            // simulation (eth_estimateGas) for the next transaction (e.g. Trade) will fail
+            // because the state change (e.g. USDC Approve) hasn't been confirmed on-chain yet.
+            if (publicClient) {
               const receipt = await publicClient.waitForTransactionReceipt({
                 hash,
                 confirmations: 1,

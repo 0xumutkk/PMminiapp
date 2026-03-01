@@ -10,7 +10,6 @@ import {
   useRef,
   useState
 } from "react";
-import { useMiniAppContext } from "@/lib/use-miniapp-context";
 import { requestMiniAppSignIn } from "@/lib/miniapp-sdk-safe";
 
 type MiniAppAuthUser = {
@@ -43,6 +42,36 @@ type MiniAppAuthContextValue = {
 };
 
 const MiniAppAuthContext = createContext<MiniAppAuthContextValue | null>(null);
+const AUTH_BEARER_STORAGE_KEY = "miniapp_auth_bearer";
+
+function readStoredBearerToken() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const token = window.sessionStorage.getItem(AUTH_BEARER_STORAGE_KEY);
+    return token && token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistBearerToken(token: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    if (token) {
+      window.sessionStorage.setItem(AUTH_BEARER_STORAGE_KEY, token);
+    } else {
+      window.sessionStorage.removeItem(AUTH_BEARER_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage access errors in restrictive webviews.
+  }
+}
 
 function errorToMessage(error: unknown): string {
   let message = "";
@@ -69,6 +98,10 @@ function errorToMessage(error: unknown): string {
 
   if (message.toLowerCase().includes("invalid_signature")) {
     return "Signature verification failed. Please try signing in again.";
+  }
+
+  if (message.toLowerCase().includes("mini app sdk unavailable")) {
+    return "Sign in is only available inside Base App.";
   }
 
   return message;
@@ -107,8 +140,8 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
   const [status, setStatus] = useState<MiniAppAuthStatus>("loading");
   const [user, setUser] = useState<MiniAppAuthUser | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [storageReady, setStorageReady] = useState(false);
   const tokenRef = useRef<string | null>(null);
-  const { inMiniAppHost, isLikelyMiniAppHost } = useMiniAppContext();
 
   const getAuthHeaders = useCallback(() => {
     const headers: Record<string, string> = {};
@@ -133,6 +166,7 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
         setStatus("guest");
         setError(null);
         tokenRef.current = null;
+        persistBearerToken(null);
         return;
       }
 
@@ -143,11 +177,13 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
         setStatus("guest");
         setError(null);
         tokenRef.current = null;
+        persistBearerToken(null);
         return;
       }
 
       if (payload.token) {
         tokenRef.current = payload.token;
+        persistBearerToken(payload.token);
       }
       setUser(payload.user);
       setStatus("authenticated");
@@ -157,22 +193,24 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
       setStatus("guest");
       setError(errorToMessage(refreshError));
       tokenRef.current = null;
+      persistBearerToken(null);
     }
   }, [getAuthHeaders]);
 
   useEffect(() => {
+    tokenRef.current = readStoredBearerToken();
+    setStorageReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
     void refreshSession();
-  }, [refreshSession]);
+  }, [refreshSession, storageReady]);
 
   const signIn = useCallback(async () => {
     setError(null);
-
-    if (!isLikelyMiniAppHost) {
-      setStatus("guest");
-      setUser(null);
-      setError("Sign in is only available inside Base App.");
-      return false;
-    }
 
     setStatus("authenticating");
     try {
@@ -207,6 +245,7 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
 
       if (payload.token) {
         tokenRef.current = payload.token;
+        persistBearerToken(payload.token);
       }
       setUser(payload.user);
       setStatus("authenticated");
@@ -218,11 +257,12 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
       setError(errorToMessage(signInError));
       return false;
     }
-  }, [isLikelyMiniAppHost]);
+  }, []);
 
   const signOut = useCallback(async () => {
     setError(null);
     tokenRef.current = null;
+    persistBearerToken(null);
     try {
       await fetch("/api/auth/session", {
         method: "DELETE",

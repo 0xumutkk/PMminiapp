@@ -355,7 +355,8 @@ export async function POST(request: Request) {
     const cookieHeader = createAuthCookieHeader(
       verifyResult.token,
       maxAgeSeconds,
-      claims.address
+      claims.address,
+      verifiedDomain
     );
     const setCookieParts = cookieHeader.split("\n").filter(Boolean);
     const headers = new Headers(rateHeaders);

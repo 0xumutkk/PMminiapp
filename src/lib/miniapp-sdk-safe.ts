@@ -162,10 +162,6 @@ function installSdkGuards() {
 }
 
 export async function getMiniAppSdk() {
-  if (!isLikelyMiniAppHost()) {
-    return null;
-  }
-
   installSdkGuards();
 
   sdkPromise ??= import("@farcaster/miniapp-sdk")

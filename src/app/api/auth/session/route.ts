@@ -2,6 +2,7 @@ import { getRequestId } from "@/lib/security/request-context";
 import {
   clearAuthCookieHeader,
   getAuthAddressFromRequest,
+  getAuthDomainFromRequest,
   getAuthTokenFromRequest,
   normalizeMiniAppDomain,
   resolveExpectedAuthDomain,
@@ -35,7 +36,7 @@ function parseHostCandidate(raw: string | null | undefined) {
   return value;
 }
 
-function buildDomainCandidates(request: Request, expectedDomain: string) {
+function buildDomainCandidates(request: Request, expectedDomain: string, preferredDomain?: string | null) {
   const candidates = new Set<string>();
 
   const add = (raw: string | null | undefined) => {
@@ -46,6 +47,7 @@ function buildDomainCandidates(request: Request, expectedDomain: string) {
     }
   };
 
+  add(preferredDomain);
   add(expectedDomain);
   add(process.env.NEXT_PUBLIC_MINI_APP_URL);
   add(request.headers.get("x-forwarded-host")?.split(",")[0] ?? "");
@@ -72,7 +74,8 @@ export async function GET(request: Request) {
     }
 
     const expectedDomain = resolveExpectedAuthDomain(request);
-    const domains = buildDomainCandidates(request, expectedDomain);
+    const authDomainFromCookie = getAuthDomainFromRequest(request);
+    const domains = buildDomainCandidates(request, expectedDomain, authDomainFromCookie);
     const addressFromCookie = getAuthAddressFromRequest(request);
     let claims = null;
     for (const domain of domains) {

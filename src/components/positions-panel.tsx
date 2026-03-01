@@ -1,11 +1,15 @@
 "use client";
 
-import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
-import { useAccount } from "wagmi";
+import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
+import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 const REFRESH_EVENT_NAME = "positions:refresh";
+const DEFAULT_SELL_MAX_SLIPPAGE_BPS = 200;
+
+type ActivePosition = PortfolioPositionsSnapshot["active"][number];
 
 function formatUsd(raw: string) {
   const value = Number(raw);
@@ -20,77 +24,131 @@ function formatUsd(raw: string) {
   }).format(value);
 }
 
-export function PositionsPanel() {
-  const { address } = useAccount();
-  const { user, isAuthenticated } = useMiniAppAuth();
-  const account = user?.address ?? address ?? null;
-  const [snapshot, setSnapshot] = useState<PortfolioPositionsSnapshot | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function parseProbability(value: unknown) {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) {
+    return null;
+  }
 
-  const load = useCallback(async () => {
-    if (!account || !isAuthenticated) {
-      setSnapshot(null);
-      setError(null);
-      return;
-    }
+  return parsed;
+}
 
-    setLoading(true);
-    try {
-      const response = await fetch(`/api/portfolio/positions?account=${account}`, {
-        cache: "no-store",
-        credentials: "include"
-      });
-      const body = (await response.json().catch(() => null)) as
-        | PortfolioPositionsSnapshot
-        | { error?: string }
-        | null;
+async function resolveSellExpectedPrice(position: ActivePosition) {
+  // Fast path: on-chain positions carry the current price directly.
+  const embeddedPrice = parseProbability(position.currentPrice);
+  if (embeddedPrice !== null) {
+    return embeddedPrice;
+  }
 
-      if (!response.ok || !body || ("error" in body && body.error)) {
-        const message =
-          body && "error" in body && typeof body.error === "string"
-            ? body.error
-            : `Failed to load positions (${response.status})`;
-        throw new Error(message);
+  // Slow path: look up current price from the market API.
+  const candidates = [...new Set([position.marketSlug, position.marketId].filter((item) => item.length > 0))];
+
+  for (const marketId of candidates) {
+    const response = await fetch(`/api/markets/${encodeURIComponent(marketId)}`, {
+      cache: "no-store",
+      credentials: "include"
+    });
+    const body = (await response.json().catch(() => null)) as
+      | {
+        yesPrice?: unknown;
+        noPrice?: unknown;
+        error?: string;
       }
+      | null;
 
-      setSnapshot(body as PortfolioPositionsSnapshot);
-      setError(null);
-    } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : "Failed to load positions";
-      setError(message);
-    } finally {
-      setLoading(false);
+    if (!response.ok || !body || (typeof body.error === "string" && body.error.length > 0)) {
+      continue;
     }
-  }, [account, isAuthenticated]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+    const expectedPrice = parseProbability(position.side === "yes" ? body.yesPrice : body.noPrice);
+    if (expectedPrice !== null) {
+      return expectedPrice;
+    }
+  }
+
+  throw new Error("Could not resolve current market price for sell. Please refresh and try again.");
+}
+
+export function PositionsPanel() {
+  const { executeIntent, isBusy, isConnected, state, statusLabel } = useTradeExecutor();
+  const { account, isAuthenticated, snapshot, loading, error: queryError, refetch } = usePortfolioPositions();
+  const [interactionError, setInteractionError] = useState<string | null>(null);
+  const [activeActionId, setActiveActionId] = useState<string | null>(null);
+  const router = useRouter();
+  const error = interactionError ?? queryError;
 
   useEffect(() => {
     if (!account || !isAuthenticated) {
       return;
     }
-
-    const timer = setInterval(() => {
-      void load();
-    }, 20_000);
 
     const onRefresh = () => {
-      void load();
+      void refetch();
     };
 
     window.addEventListener(REFRESH_EVENT_NAME, onRefresh);
 
     return () => {
-      clearInterval(timer);
       window.removeEventListener(REFRESH_EVENT_NAME, onRefresh);
     };
-  }, [account, isAuthenticated, load]);
+  }, [account, isAuthenticated, refetch]);
 
-  const topActive = useMemo(() => snapshot?.active.slice(0, 3) ?? [], [snapshot?.active]);
+  const activePositions = useMemo(() => snapshot?.active ?? [], [snapshot?.active]);
+  const claimableSettledPositions = useMemo(
+    () => snapshot?.settled.filter((item) => item.claimable) ?? [],
+    [snapshot?.settled]
+  );
   const claimableCount = snapshot?.settled.filter((item) => item.claimable).length ?? 0;
+
+  const onSell = useCallback(
+    async (position: ActivePosition) => {
+      if (!isConnected || !account) {
+        return;
+      }
+
+      setActiveActionId(position.id);
+      const amountUsdc = Number(position.marketValueUsdc) > 0 ? position.marketValueUsdc : "1";
+      try {
+        setInteractionError(null);
+        const expectedPrice = await resolveSellExpectedPrice(position);
+        await executeIntent({
+          action: "sell",
+          marketId: position.marketSlug || position.marketId,
+          side: position.side,
+          amountUsdc,
+          expectedPrice,
+          maxSlippageBps: DEFAULT_SELL_MAX_SLIPPAGE_BPS
+        });
+      } catch (sellError) {
+        const message = sellError instanceof Error ? sellError.message : "Sell request failed";
+        setInteractionError(message);
+      } finally {
+        setActiveActionId(null);
+      }
+    },
+    [account, executeIntent, isConnected]
+  );
+
+  const onRedeem = useCallback(
+    async (position: PortfolioPositionsSnapshot["settled"][number]) => {
+      if (!isConnected || !account) {
+        return;
+      }
+
+      setActiveActionId(position.id);
+      try {
+        await executeIntent({
+          action: "redeem",
+          marketId: position.marketSlug || position.marketId,
+          side: position.side,
+          amountUsdc: position.marketValueUsdc
+        });
+      } finally {
+        setActiveActionId(null);
+      }
+    },
+    [account, executeIntent, isConnected]
+  );
 
   if (!isAuthenticated || !account) {
     return (
@@ -104,7 +162,7 @@ export function PositionsPanel() {
     <section className="positions-panel" aria-live="polite">
       <header className="positions-panel__head">
         <p className="positions-panel__title">My Positions</p>
-        <button type="button" onClick={() => void load()} disabled={loading} className="positions-panel__refresh">
+        <button type="button" onClick={() => void refetch()} disabled={loading} className="positions-panel__refresh">
           {loading ? "Updating..." : "Refresh"}
         </button>
       </header>
@@ -126,19 +184,42 @@ export function PositionsPanel() {
         </div>
       </div>
 
-      {topActive.length > 0 ? (
+      {activePositions.length > 0 ? (
         <ul className="positions-panel__list">
-          {topActive.map((position) => (
+          {activePositions.map((position) => (
             <li key={position.id} className="positions-panel__item">
-              <div>
-                <p>{position.marketTitle}</p>
-                <span className={`positions-panel__side positions-panel__side--${position.side}`}>
-                  {position.side.toUpperCase()}
-                </span>
+              <div className="positions-panel__item-main">
+                <p
+                  className="positions-panel__market-link"
+                  onClick={() => {
+                    const feedId = position.marketSlug || position.marketId;
+                    router.push(`/feed?startAt=${encodeURIComponent(feedId)}`);
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  {position.marketTitle}
+                </p>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span className={`positions-panel__side positions-panel__side--${position.side}`}>
+                    {position.side.toUpperCase()}
+                  </span>
+                  <span style={{ fontSize: "13px", color: "var(--text-hint)" }}>
+                    {Number(position.tokenBalance || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} Shares
+                  </span>
+                </div>
               </div>
-              <div>
+              <div className="positions-panel__item-actions">
                 <p>{formatUsd(position.marketValueUsdc)}</p>
                 <span>PnL {formatUsd(position.unrealizedPnlUsdc)}</span>
+                <button
+                  type="button"
+                  className="positions-panel__action positions-panel__action--sell"
+                  onClick={() => void onSell(position)}
+                  disabled={!isConnected || isBusy || activeActionId === position.id}
+                >
+                  {activeActionId === position.id ? "Selling..." : "Sell"}
+                </button>
               </div>
             </li>
           ))}
@@ -146,6 +227,41 @@ export function PositionsPanel() {
       ) : (
         <p className="positions-panel__hint">No active positions yet.</p>
       )}
+
+      {claimableSettledPositions.length > 0 ? (
+        <>
+          <p className="positions-panel__section-title">Claimable settlements</p>
+          <ul className="positions-panel__list">
+            {claimableSettledPositions.map((position) => (
+              <li key={position.id} className="positions-panel__item">
+                <div className="positions-panel__item-main">
+                  <p>{position.marketTitle}</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span className={`positions-panel__side positions-panel__side--${position.side}`}>
+                      {position.side.toUpperCase()}
+                    </span>
+                    <span style={{ fontSize: "13px", color: "var(--text-hint)" }}>
+                      {Number(position.tokenBalance || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} Shares
+                    </span>
+                  </div>
+                </div>
+                <div className="positions-panel__item-actions">
+                  <p>{formatUsd(position.marketValueUsdc)}</p>
+                  <span>Settled payout</span>
+                  <button
+                    type="button"
+                    className="positions-panel__action positions-panel__action--redeem"
+                    onClick={() => void onRedeem(position)}
+                    disabled={!isConnected || isBusy || activeActionId === position.id}
+                  >
+                    {activeActionId === position.id ? "Redeeming..." : "Redeem"}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
 
       <p className="positions-panel__footer">
         Settled positions: <strong>{snapshot?.settled.length ?? 0}</strong>
@@ -156,6 +272,8 @@ export function PositionsPanel() {
           </>
         ) : null}
       </p>
+      {!isConnected ? <p className="positions-panel__hint">Connect wallet to sell or redeem positions.</p> : null}
+      <p className={`trade-status trade-status--${state.status}`}>{statusLabel}</p>
     </section>
   );
 }

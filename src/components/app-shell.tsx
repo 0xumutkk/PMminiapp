@@ -1,6 +1,8 @@
+"use client";
+
 import { MiniAppContextBadge } from "@/components/miniapp-context-badge";
 import { CustomNavBar } from "@/components/custom-nav-bar";
-import { WalletStatus } from "@/components/wallet-status";
+import { WalletStatusSlot } from "@/components/wallet-status-slot";
 
 type AppShellProps = {
   title: string;
@@ -9,22 +11,36 @@ type AppShellProps = {
   scrollContent?: boolean;
 };
 
+import { usePathname } from "next/navigation";
+import Link from "next/link";
+
 export function AppShell({ title, subtitle, children, scrollContent = false }: AppShellProps) {
+  const pathname = usePathname();
+
   return (
     <main className="app-shell">
       <header className="app-shell__top">
-        <div className="app-shell__identity">
-          <p className="app-shell__title">{title}</p>
-          {subtitle ? <p className="app-shell__subtitle">{subtitle}</p> : <MiniAppContextBadge />}
+        <div className="segmented-control">
+          <Link href="/markets" className={`segmented-control__item ${pathname === "/markets" ? "segmented-control__item--active" : ""}`}>
+            Markets
+          </Link>
+          <Link href="/feed" className={`segmented-control__item ${pathname === "/feed" ? "segmented-control__item--active" : ""}`}>
+            Feed
+          </Link>
         </div>
-        <WalletStatus />
+
+        <div className="segmented-control">
+          <Link href="/profile" className={`segmented-control__item ${pathname === "/profile" ? "segmented-control__item--active" : ""}`}>
+            Profile
+          </Link>
+        </div>
       </header>
 
       <section className={`app-shell__content${scrollContent ? " app-shell__content--scroll" : ""}`}>
         {children}
       </section>
 
-      <CustomNavBar />
+      {pathname !== "/feed" && <CustomNavBar />}
     </main>
   );
 }

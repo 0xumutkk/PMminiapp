@@ -71,7 +71,7 @@ export function MarketsBrowser() {
   const availableCategories = useMemo(() => {
     const set = new Set<MarketCategoryFilter>(["all"]);
     for (const market of markets) {
-      set.add(inferMarketCategoryId(market.title));
+      set.add(inferMarketCategoryId(market.title, market.categories));
     }
 
     return CATEGORY_FILTER_OPTIONS.filter((option) => set.has(option.id));
@@ -83,7 +83,7 @@ export function MarketsBrowser() {
     return markets.filter((market) => {
       const matchesQuery = !text || market.title.toLowerCase().includes(text);
       const matchesCategory =
-        activeCategory === "all" || inferMarketCategoryId(market.title) === activeCategory;
+        activeCategory === "all" || inferMarketCategoryId(market.title, market.categories) === activeCategory;
       return matchesQuery && matchesCategory;
     });
   }, [activeCategory, deferredQuery, markets]);
@@ -98,28 +98,26 @@ export function MarketsBrowser() {
   }
 
   return (
-    <div className="market-browser">
-      <label className="field-group" htmlFor="market-search">
-        <span>Search markets</span>
+    <div className="market-browser" style={{ padding: '0 16px 120px' }}>
+      <div className="explore-search-bar">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" opacity="0.3">
+          <path d="M14.1667 14.1667L17.5 17.5M15.8333 9.16667C15.8333 12.8486 12.8486 15.8333 9.16667 15.8333C5.48477 15.8333 2.5 12.8486 2.5 9.16667C2.5 5.48477 5.48477 2.5 9.16667 2.5C12.8486 2.5 15.8333 5.48477 15.8333 9.16667Z" stroke="white" strokeWidth="1.66667" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
         <input
-          id="market-search"
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Try: election, bitcoin, policy..."
+          placeholder="Search Markets"
         />
-      </label>
+      </div>
 
-      <div className="category-filters" role="tablist" aria-label="Market categories">
+      <div className="explore-categories">
         {availableCategories.map((category) => {
           const selected = category.id === activeCategory;
           return (
             <button
               key={category.id}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              className={`category-filters__item${selected ? " category-filters__item--active" : ""}`}
+              className={`explore-category-chip ${selected ? 'explore-category-chip--active' : ''}`}
               onClick={() => setActiveCategory(category.id)}
             >
               {category.label}
@@ -128,22 +126,40 @@ export function MarketsBrowser() {
         })}
       </div>
 
-      <div className="market-list">
+      <div style={{ marginTop: '20px' }}>
         {filteredMarkets.map((market) => (
           <Link
             key={market.id}
             href={`/feed?startAt=${encodeURIComponent(market.id)}`}
-            className="market-list__link"
+            className="explore-card"
           >
-            <article className="market-list__item">
-              <p className="market-list__title">{market.title}</p>
-              <p className="market-list__meta">
-                <span className="chip chip--category">{marketCategoryLabel(inferMarketCategoryId(market.title))}</span>
-                <span className="chip chip--yes">YES {formatPercent(market.yesPrice)}</span>
-                <span className="chip chip--no">NO {formatPercent(market.noPrice)}</span>
-                <span>Ends {formatEndsAt(market.endsAt)}</span>
-              </p>
-            </article>
+            <div className="explore-card__header">
+              <img
+                src={market.imageUrl || "/icon.png"}
+                className="explore-card__token"
+                alt=""
+              />
+              <div className="explore-card__title-row">
+                <h3 className="explore-card__title">{market.title}</h3>
+                <span className="explore-card__prob">{formatPercent(market.yesPrice)}</span>
+              </div>
+            </div>
+
+            <div className="explore-card__stats">
+              <div className="explore-card__trending">
+                <span>Trending</span>
+              </div>
+
+              <div className="explore-card__stat-pill">
+                <span className="explore-card__stat-label">Ends In</span>
+                <span className="explore-card__stat-value">{formatEndsAt(market.endsAt)}</span>
+              </div>
+
+              <div className="explore-card__stat-pill">
+                <span className="explore-card__stat-label">Volume</span>
+                <span className="explore-card__stat-value">${(market.volume24h || 0).toLocaleString()}</span>
+              </div>
+            </div>
           </Link>
         ))}
 

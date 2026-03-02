@@ -23,6 +23,8 @@ export type Market = {
   positionIds?: [string, string];
   source: "limitless";
   imageUrl?: string;
+  categories?: string[];
+  tags?: string[];
 };
 
 export type MarketSnapshot = {

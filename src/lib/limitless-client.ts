@@ -60,6 +60,8 @@ type LimitlessActiveMarketRow = {
   /** ERC-1155 position token IDs: [YES, NO] */
   positionIds?: unknown;
   imageUrl?: unknown;
+  categories?: unknown;
+  tags?: unknown;
 };
 
 type LimitlessActiveMarketsResponse = {
@@ -256,7 +258,9 @@ function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
     },
     source: "limitless",
     positionIds: parsePositionIds(row.positionIds),
-    imageUrl: toString(row.imageUrl)
+    imageUrl: toString(row.imageUrl),
+    categories: Array.isArray(row.categories) ? row.categories.filter((c): c is string => typeof c === "string") : undefined,
+    tags: Array.isArray(row.tags) ? row.tags.filter((t): t is string => typeof t === "string") : undefined
   };
 }
 

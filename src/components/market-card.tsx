@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback, type CSSProperties } from "react";
+import { useAccount } from "wagmi";
+import { getMarketVibe } from "@/lib/vibe-utils";
 import { Market } from "@/lib/market-types";
 import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
@@ -130,51 +132,6 @@ function EyeIcon() {
   );
 }
 
-function FlameIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden>
-      <path d="M13.9 2.5c.6 3-1.6 4.3-3 5.9-1.3 1.4-1.8 2.5-1.8 4a4 4 0 1 0 8 0c0-4.3-2.2-6-3.2-9.9z" />
-    </svg>
-  );
-}
-
-function HeartIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden>
-      <path
-        d="M12 20.5l-1.2-1.1C6.2 15.3 3.2 12.6 3.2 9.1A4.1 4.1 0 0 1 7.4 5a4.7 4.7 0 0 1 4.6 2.8A4.7 4.7 0 0 1 16.6 5a4.1 4.1 0 0 1 4.2 4.1c0 3.5-3 6.2-7.6 10.3z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function MessageIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden>
-      <path d="M4 5h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9.2L4 21V7a2 2 0 0 1 2-2z" />
-    </svg>
-  );
-}
-
-function ShareIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden>
-      <path d="M9 8l8-4v16l-8-4v-3.5H3.5a1.5 1.5 0 0 1 0-3H9z" />
-    </svg>
-  );
-}
-
-function BookmarkIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden>
-      <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-3.8L5 21V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    </svg>
-  );
-}
 
 function TrendIcon() {
   return (
@@ -345,10 +302,6 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
   }
 
   const volume = market.volume24h ?? 0;
-  const likeCount = formatCompactNumber(Math.max(2_300, volume * 34));
-  const commentCount = formatCompactNumber(Math.max(900, volume * 11));
-  const shareCount = formatCompactNumber(Math.max(400, volume * 5.2));
-  const participants = formatCompactNumber(Math.max(4_100, volume * 23));
   const latestTxHash = state.txHashes[state.txHashes.length - 1] ?? null;
   const txExplorerUrl = latestTxHash ? `https://basescan.org/tx/${latestTxHash}` : null;
   const busyMs = busySince ? Date.now() - busySince : 0;
@@ -372,10 +325,24 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           ? state.error ?? "Trade failed"
           : "";
 
+  const vibe = useMemo(() => getMarketVibe(market.title, market.id, market.categories, market.tags), [market.title, market.id, market.categories, market.tags]);
 
   return (
     <article className="market-card" data-active={isActive ? "true" : "false"}>
       <div className="market-card__bg" style={backdropStyle} aria-hidden>
+        <div className="market-card__blobs">
+          {vibe.colors.map((color: string, i: number) => (
+            <div
+              key={i}
+              className="market-card__blob"
+              style={{
+                backgroundColor: color,
+                left: `${(i * 35) % 100}%`,
+                top: `${(i * 25) % 100}%`,
+              }}
+            />
+          ))}
+        </div>
         {market.imageUrl && (
           <img
             src={market.imageUrl}
@@ -386,43 +353,11 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
       </div>
       <div className="market-card__veil" aria-hidden />
 
-      <header className="market-card__top-controls">
-        <button type="button" className="icon-btn" aria-label="Notifications">
-          <BellIcon />
-        </button>
-        <div className="topic-pill">
-          <EyeIcon />
-          <span>{topic}</span>
-        </div>
-        <span className="source-pill">BASE</span>
-      </header>
 
-      <aside className="market-side-actions" aria-label="Engagement actions">
-        <div className="side-hot">
-          <FlameIcon />
-          <span>HOT</span>
-        </div>
-        <div className="side-action">
-          <HeartIcon />
-          <span>{likeCount}</span>
-        </div>
-        <div className="side-action">
-          <MessageIcon />
-          <span>{commentCount}</span>
-        </div>
-        <div className="side-action">
-          <ShareIcon />
-          <span>{shareCount}</span>
-        </div>
-        <div className="side-action">
-          <BookmarkIcon />
-          <span>Save</span>
-        </div>
-      </aside>
 
       <section className="market-card__content">
-        <div className="market-card__meta-row" style={{ gap: '8px', marginBottom: '8px' }}>
-          <span className="trend-pill">Trending</span>
+        <div className="market-card__meta-row">
+          <span className="trend-pill">{vibe.label}</span>
           <span className="percent-pill">{formatPercent(market.yesPrice)}</span>
           <span className="top-meta-chip">Ends {formatCountdown(market.endsAt, nowMs)}</span>
           <span className="top-meta-chip">Vol. {formatCompactNumber(market.volume24h)}</span>
@@ -432,10 +367,24 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
 
         <div className="stake-presets" style={{ marginTop: '16px', marginBottom: '16px' }}>
           <div className="stake-control">
-            <span>Stake</span>
-            <button type="button" className="stake-preset-btn" style={{ background: 'rgba(255,255,255,0.15)', borderRadius: '999px', padding: '4px 12px' }}>
-              ${amountUsdc}
-            </button>
+            <span>Stake $</span>
+            <input
+              type="number"
+              className="stake-input"
+              value={amountUsdc}
+              onChange={(e) => setAmountUsdc(e.target.value)}
+              style={{
+                background: 'rgba(255,255,255,0.15)',
+                border: 'none',
+                borderRadius: '999px',
+                padding: '4px 12px',
+                width: '64px',
+                color: '#fff',
+                fontWeight: '700',
+                outline: 'none',
+                fontSize: '15px'
+              }}
+            />
           </div>
           {[5, 50, 100, 150].map((preset) => (
             <button
@@ -523,10 +472,6 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           </div>
         ) : null}
 
-        {tradeStatusText ? (
-          <p className={`trade-status trade-status--${localError ? "failed" : state.status}`}>{tradeStatusText}</p>
-        ) : null}
-        {!isAuthenticated && authError ? <p className="trade-status trade-status--failed">{authError}</p> : null}
       </section>
     </article>
   );

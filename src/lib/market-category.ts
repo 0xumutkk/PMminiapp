@@ -82,7 +82,20 @@ export const CATEGORY_FILTER_OPTIONS: { id: MarketCategoryFilter; label: string 
   { id: "other", label: "Other" }
 ];
 
-export function inferMarketCategoryId(title: string): MarketCategoryId {
+export function inferMarketCategoryId(title: string, categories?: string[]): MarketCategoryId {
+  // 1. Try mapping from API categories if they exist
+  if (categories && categories.length > 0) {
+    const apiCats = categories.map(c => c.toLowerCase());
+
+    if (apiCats.some(c => c.includes('crypto') || c.includes('bitcoin') || c.includes('ethereum'))) return 'crypto';
+    if (apiCats.some(c => c.includes('politics') || c.includes('election'))) return 'politics';
+    if (apiCats.some(c => c.includes('science') || c.includes('space') || c.includes('ai'))) return 'science';
+    if (apiCats.some(c => c.includes('sport') || c.includes('soccer') || c.includes('football') || c.includes('nba'))) return 'sports';
+    if (apiCats.some(c => c.includes('economy') || c.includes('fed') || c.includes('inflation'))) return 'economy';
+    if (apiCats.some(c => c.includes('conspiracy'))) return 'conspiracy';
+  }
+
+  // 2. Fallback to title-based regex matching
   for (const definition of CATEGORY_DEFINITIONS) {
     if (definition.pattern.test(title)) {
       return definition.id;

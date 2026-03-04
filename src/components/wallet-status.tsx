@@ -1,6 +1,6 @@
 "use client";
 
-import { useAccount, useChainId, useConnect } from "wagmi";
+import { useAccount, useChainId, useConnect, useDisconnect } from "wagmi";
 import { base } from "wagmi/chains";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import { useMiniAppContext } from "@/lib/use-miniapp-context";
@@ -11,9 +11,10 @@ function shortAddress(address: string) {
 
 export function WalletStatus() {
   const { address, isConnected } = useAccount();
+  const { disconnect } = useDisconnect();
   const chainId = useChainId();
   const { connect, connectors, isPending } = useConnect();
-  const { isAuthenticated, status: authStatus, signIn } = useMiniAppAuth();
+  const { isAuthenticated, status: authStatus, signIn, signOut } = useMiniAppAuth();
   const { inMiniAppHost } = useMiniAppContext();
 
   if (isPending) {
@@ -21,17 +22,7 @@ export function WalletStatus() {
   }
 
   if (!isConnected || !address) {
-    const defaultConnector = inMiniAppHost
-      ? connectors.find((c) => c.id === "farcaster" && c.ready) ??
-        connectors.find((c) => c.ready) ??
-        connectors[0]
-      : connectors.find((c) => c.id === "injected" && c.ready) ??
-        connectors.find((c) => c.ready) ??
-        connectors[0];
-
-    if (!defaultConnector) {
-      return <p className="wallet-status">Wallet unavailable</p>;
-    }
+    const defaultConnector = connectors.find((c) => (inMiniAppHost ? c.id === "farcaster" : c.id === "injected")) ?? connectors[0];
 
     return (
       <button
@@ -54,12 +45,31 @@ export function WalletStatus() {
 
   if (!isAuthenticated) {
     return (
-      <button className="wallet-connect-btn" onClick={() => void signIn()} type="button">
-        Sign in
-      </button>
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <button className="wallet-connect-btn" onClick={() => void signIn()} type="button">
+          Sign In
+        </button>
+        <button className="wallet-connect-btn" onClick={() => disconnect()} type="button">
+          ×
+        </button>
+      </div>
     );
   }
 
   const chainText = chainId === base.id ? "Base" : `Chain ${chainId}`;
-  return <p className="wallet-status">{shortAddress(address)} · {chainText}</p>;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <p className="wallet-status" style={{ margin: 0 }}>{shortAddress(address)} · {chainText}</p>
+      <button
+        className="wallet-connect-btn"
+        style={{ minWidth: 'unset', padding: '6px 10px' }}
+        onClick={() => {
+          void signOut();
+          disconnect();
+        }}
+      >
+        Out
+      </button>
+    </div>
+  );
 }

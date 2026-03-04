@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { MiniAppContextBadge } from "@/components/miniapp-context-badge";
 import { WalletStatusSlot } from "@/components/wallet-status-slot";
 
@@ -12,11 +13,37 @@ type AppShellProps = {
 
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { useAccount } from "wagmi";
+import { useAccount, useConnect } from "wagmi";
+import { useMiniAppContext } from "@/lib/use-miniapp-context";
+import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 
 export function AppShell({ title, subtitle, children, scrollContent = false }: AppShellProps) {
   const pathname = usePathname();
-  const { isConnected } = useAccount();
+  const [mounted, setMounted] = useState(false);
+  const { address, isConnected, status: connectionStatus } = useAccount();
+  const { connect, connectors, isPending: isConnecting } = useConnect();
+  const { inMiniAppHost } = useMiniAppContext();
+  const { isAuthenticated, status: authStatus, signIn } = useMiniAppAuth();
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const handleConnect = () => {
+    // Priority: Farcaster (if in host) > Injected > First available
+    const farcaster = connectors.find(c => c.id === 'farcaster');
+    const injected = connectors.find(c => c.id === 'injected');
+
+    const connector = inMiniAppHost ? (farcaster ?? injected ?? connectors[0]) : (injected ?? farcaster ?? connectors[0]);
+
+    if (connector) {
+      connect({ connector });
+    }
+  };
+
+  const isActuallyConnected = mounted && isConnected && connectionStatus === 'connected';
+  const isActuallyAuthenticated = mounted && isAuthenticated;
+  const isAuthenticating = authStatus === "authenticating";
 
   return (
     <main className="app-shell">
@@ -46,12 +73,44 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
           </div>
 
           <div className="segmented-control">
-            <Link
-              href="/profile"
-              className={`segmented-control__item ${pathname === "/profile" ? "segmented-control__item--active" : ""}`}
-            >
-              {isConnected ? "Profile" : "Connect"}
-            </Link>
+            {!isActuallyConnected ? (
+              <button
+                className="segmented-control__item"
+                onClick={handleConnect}
+                disabled={isConnecting}
+                style={{
+                  border: 'none',
+                  background: 'none',
+                  cursor: isConnecting ? 'not-allowed' : 'pointer',
+                  fontWeight: 700,
+                  opacity: isConnecting ? 0.6 : 1
+                }}
+              >
+                {isConnecting ? 'Connecting...' : 'Connect'}
+              </button>
+            ) : !isActuallyAuthenticated ? (
+              <button
+                className="segmented-control__item"
+                onClick={() => void signIn()}
+                disabled={isAuthenticating}
+                style={{
+                  border: 'none',
+                  background: 'none',
+                  cursor: isAuthenticating ? 'not-allowed' : 'pointer',
+                  fontWeight: 700,
+                  opacity: isAuthenticating ? 0.6 : 1
+                }}
+              >
+                {isAuthenticating ? 'Signing in...' : 'Sign In'}
+              </button>
+            ) : (
+              <Link
+                href="/profile"
+                className={`segmented-control__item ${pathname === "/profile" ? "segmented-control__item--active" : ""}`}
+              >
+                Profile
+              </Link>
+            )}
           </div>
         </div>
       </header>

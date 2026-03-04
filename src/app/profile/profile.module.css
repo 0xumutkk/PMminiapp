@@ -1,209 +1,317 @@
 .profileHub {
-  display: grid;
-  gap: 10px;
-  min-height: 100%;
-}
-
-.profileHero {
-  border: 1px solid rgba(111, 149, 222, 0.34);
-  border-radius: 18px;
-  padding: 12px;
-  display: grid;
-  gap: 7px;
-  background:
-    radial-gradient(140% 120% at 5% -20%, rgba(0, 82, 255, 0.26) 0%, transparent 58%),
-    radial-gradient(140% 120% at 95% 120%, rgba(26, 219, 135, 0.15) 0%, transparent 64%),
-    rgba(10, 16, 30, 0.9);
-}
-
-.profileHeroTop {
   display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100%;
+  padding-bottom: 24px;
+}
+
+/* Net Worth Card (Figma 127:3710) */
+.netWorthCard {
+  position: relative;
+  background: linear-gradient(124.14deg, #0c1014 0%, rgba(65, 65, 65, 0) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  border-radius: 24px;
+  padding: 20px;
+  overflow: hidden;
+  box-shadow: 0px 2px 12px 0px rgba(255, 255, 255, 0.02), 0px 2px 20px 0px rgba(0, 0, 0, 0.8);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.netWorthTop {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.netWorthLabel {
+  font-size: 15px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.netWorthValue {
+  font-size: 40px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.02em;
+}
+
+.netWorthDecimals {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.netWorthStats {
+  display: flex;
+  gap: 12px;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
 }
 
-.profileHeroEyebrow,
-.profileHeroBadge,
-.profileHero h2,
-.profileHero p {
-  margin: 0;
+.statItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.profileHeroEyebrow {
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: rgba(184, 207, 247, 0.9);
-  font-weight: 760;
-}
-
-.profileHeroBadge {
-  min-height: 24px;
-  border-radius: 999px;
-  border: 1px solid rgba(127, 167, 238, 0.52);
-  padding: 0 9px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 760;
-  color: #d7e7ff;
-  background: rgba(11, 31, 66, 0.82);
-}
-
-.profileHero h2 {
-  font-size: 21px;
-  line-height: 1.15;
-  font-weight: 800;
-  letter-spacing: 0.01em;
-}
-
-.profileHero p {
+.statLabel {
   font-size: 13px;
-  color: rgba(208, 222, 249, 0.88);
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.4);
 }
 
+.statValue {
+  font-size: 15px;
+  font-weight: 600;
+  color: #0bd52d;
+}
+
+.divider {
+  width: 1px;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Section Switcher (Figma 127:3763) */
 .profileSwitch {
-  position: sticky;
-  top: 0;
-  z-index: 12;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  padding: 6px;
-  border: 1px solid rgba(118, 153, 221, 0.35);
-  border-radius: 16px;
-  background: rgba(8, 13, 25, 0.92);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.34);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  padding: 4px;
+  display: flex;
+  gap: 4px;
 }
 
 .profileSwitchItem {
-  min-height: 38px;
-  border-radius: 11px;
-  border: 1px solid transparent;
-  text-decoration: none;
-  color: rgba(188, 206, 243, 0.84);
-  background: rgba(11, 20, 36, 0.76);
-  font-size: 13px;
-  font-weight: 760;
-  display: inline-flex;
+  flex: 1;
+  height: 36px;
+  display: flex;
   align-items: center;
   justify-content: center;
-  transition:
-    border-color 160ms ease,
-    color 160ms ease,
-    background 160ms ease;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.45);
+  text-decoration: none;
+  transition: all 0.2s ease;
 }
 
 .profileSwitchItemActive {
-  border-color: rgba(112, 165, 255, 0.84);
-  color: #e5eeff;
-  background: linear-gradient(160deg, rgba(0, 82, 255, 0.52) 0%, rgba(9, 36, 86, 0.92) 100%);
-  box-shadow: inset 0 0 0 1px rgba(147, 185, 255, 0.22);
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
 }
 
-.profileFocusCard {
-  border: 1px solid rgba(112, 147, 216, 0.3);
-  border-radius: 18px;
-  background: rgba(8, 13, 24, 0.92);
-  padding: 14px;
-  display: grid;
+/* Horizontal Claim Cards (Figma 127:3726) */
+.claimRow {
+  display: flex;
+  gap: 10px;
+}
+
+.claimCard {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  border-radius: 20px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+  overflow: hidden;
+}
+
+.claimCardFull {
+  width: 100%;
+}
+
+.claimLabel {
+  font-size: 13px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.claimValue {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.claimCardActive {
+  border: 2px solid #0bd52d;
+}
+
+/* Position Detail Cards (Figma 127:3618) */
+.positionDetailCard {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  border-radius: 24px;
+  padding: 4px;
+  /* Container for internal structure */
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0px 0px 8px 2px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(50px);
+}
+
+.posContent {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
-.profileFocusCardHead {
-  display: grid;
-  gap: 3px;
-}
-
-.profileFocusCardHead h2,
-.profileFocusCardHead p {
-  margin: 0;
-}
-
-.profileFocusCardHead h2 {
-  font-size: 18px;
-  font-weight: 790;
-}
-
-.profileFocusCardHead p {
-  font-size: 11px;
-  color: rgba(194, 214, 250, 0.82);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.profileFocusCard :global(.positions-panel) {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 0;
+.posHeader {
+  display: flex;
   gap: 12px;
+  align-items: center;
 }
 
-.profileFocusCard :global(.positions-panel__stats div),
-.profileFocusCard :global(.positions-panel__item),
-.profileFocusCard :global(.activity-item) {
-  background: rgba(14, 22, 39, 0.72);
-  border-radius: 12px;
+.marketAvatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.03);
 }
 
-.profileFocusCard :global(.positions-panel__stats div),
-.profileFocusCard :global(.positions-panel__item) {
-  border-color: rgba(122, 157, 219, 0.34);
+.marketTitleBlock {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
 }
 
-.profileFocusCard :global(.positions-panel__title) {
-  display: none;
+.marketName {
+  font-size: 14px;
+  font-weight: 700;
+  color: #ffffff;
+  line-height: 1.2;
+  max-width: 180px;
 }
 
-.profileFocusCard :global(.positions-panel__stats) {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.marketProb {
+  font-size: 20px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.posStatsGrid {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
-.profileFocusCard :global(.positions-panel__stats div:first-child) {
-  grid-column: 1 / -1;
-  padding: 10px;
+.statRow {
+  display: flex;
+  gap: 12px;
 }
 
-.profileFocusCard :global(.positions-panel__stats div:first-child strong) {
-  font-size: 16px;
+.statBox {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  border-radius: 16px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.profileFocusCard :global(.positions-panel__item p) {
-  font-size: 12px;
-}
-
-.profileFocusCard :global(.activity-item) {
-  border: 1px solid rgba(122, 157, 219, 0.32);
-  padding: 11px;
-}
-
-.profileFocusCard :global(.activity-item__title) {
-  font-size: 10px;
-  letter-spacing: 0.08em;
+.posLabel {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.45);
   text-transform: uppercase;
-  color: rgba(170, 196, 242, 0.84);
+  letter-spacing: 0.02em;
 }
 
-.profileFocusCard :global(.activity-item__detail) {
+.posVal {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.valGreen {
+  color: #0bd52d;
+}
+
+.valRed {
+  color: #dc2626;
+}
+
+.valWhite {
+  color: #ffffff;
+}
+
+.actionArea {
+  padding: 8px 12px 12px;
+}
+
+.cashOutBtn {
+  width: 100%;
+  height: 40px;
+  background: rgba(11, 213, 45, 0.08);
+  border: none;
+  border-radius: 28px;
+  color: #0bd52d;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0px 0px 8px 0px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* Utilities */
+.heroTopSection {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.controlCenterText {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.activityList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.activityItem {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  border-radius: 16px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activityItemTitle {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.activityItemDetail {
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
+  color: #ffffff;
+  line-height: 1.4;
 }
 
-@media (max-width: 380px) {
-  .profileHero h2 {
-    font-size: 19px;
-  }
-
-  .profileFocusCard :global(.positions-panel__stats) {
-    grid-template-columns: 1fr;
-  }
-
-  .profileFocusCard :global(.positions-panel__stats div:first-child) {
-    grid-column: auto;
-  }
+.activityItemMeta {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
 }

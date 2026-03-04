@@ -1601,3 +1601,357 @@ body {
   font-size: 15px;
   color: #fff;
 }
+
+/* Profile Page Styles */
+.profileHub {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100%;
+  padding-bottom: 24px;
+}
+
+/* Net Worth Card (Figma 127:3710) */
+.netWorthCard {
+  position: relative;
+  background: linear-gradient(124.14deg, #0c1014 0%, rgba(65, 65, 65, 0) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 28px;
+  padding: 24px 20px;
+  overflow: hidden;
+  box-shadow: 0px 4px 24px 0px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.netWorthTop {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.netWorthLabel {
+  font-size: 15px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.netWorthValue {
+  font-size: 44px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.03em;
+  display: flex;
+  align-items: baseline;
+}
+
+.netWorthDecimals {
+  font-size: 32px;
+  color: rgba(255, 255, 255, 0.3);
+  margin-left: 2px;
+}
+
+.netWorthStats {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.statItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.statLabel {
+  font-size: 15px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.statValue {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0bd52d;
+}
+
+.divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Section Switcher (Figma 127:3763) - Custom "Positions" pill */
+.profileSwitch {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.02);
+  border-radius: 999px;
+  padding: 4px;
+  display: flex;
+  height: 48px;
+}
+
+.profileSwitchItem {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.4);
+  text-decoration: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.profileSwitchItemActive {
+  background: rgba(45, 45, 45, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+/* Horizontal Claim Cards (Figma 127:3726) */
+.claimRow {
+  display: flex;
+  gap: 12px;
+}
+
+.claimCard {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 20px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.claimCardFull {
+  width: 100%;
+}
+
+.claimLabel {
+  font-size: 14px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.claimValue {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.claimCardActive {
+  border: 2px solid #0bd52d;
+}
+
+.statCard {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 20px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.statCardActive {
+  border: 2px solid #0bd52d;
+}
+
+.statCardValue {
+  font-size: 18px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.statCardLabel {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Position Detail Cards (Figma 127:3618) */
+.positionDetailCard {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  border-radius: 24px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0px 8px 32px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+}
+
+.posContent {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.posHeader {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.marketAvatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+
+.marketTitleBlock {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.marketName {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ffffff;
+  line-height: 1.3;
+}
+
+.marketProb {
+  font-size: 20px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.posStatsGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.statRow {
+  display: flex;
+  gap: 10px;
+}
+
+.statBox {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.02);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.posLabel {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.posVal {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.valGreen {
+  color: #0bd52d;
+}
+
+.valRed {
+  color: #dc2626;
+}
+
+.valWhite {
+  color: #ffffff;
+}
+
+.actionArea {
+  padding: 0 12px 12px;
+}
+
+.cashOutBtn {
+  width: 100%;
+  height: 44px;
+  background: rgba(45, 45, 45, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cashOutBtn:active {
+  transform: scale(0.98);
+  background: rgba(55, 55, 55, 1);
+}
+
+/* Utilities */
+.heroTopSection {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+.controlCenterText {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.activityList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.activityItem {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  border-radius: 16px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activityItemTitle {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.activityItemDetail {
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+  line-height: 1.4;
+}
+
+.activityItemMeta {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+}

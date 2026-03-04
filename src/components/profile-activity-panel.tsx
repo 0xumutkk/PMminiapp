@@ -57,28 +57,28 @@ export function ProfileActivityPanel() {
   }, [snapshot]);
 
   if (!isAuthenticated || !account) {
-    return <p className="activity-item__empty">Sign in to view your market activity.</p>;
+    return <p style={{ opacity: 0.6, fontSize: '13px', padding: '20px' }}>Sign in to view your market activity.</p>;
   }
 
   if (loading && !snapshot) {
-    return <p className="activity-item__empty">Loading activity...</p>;
+    return <p style={{ opacity: 0.6, fontSize: '13px', padding: '20px' }}>Loading activity...</p>;
   }
 
   if (error) {
-    return <p className="activity-item__error">{error}</p>;
+    return <p style={{ color: '#dc2626', fontSize: '12px', padding: '20px' }}>{error}</p>;
   }
 
   if (items.length === 0) {
-    return <p className="activity-item__empty">No market activity yet.</p>;
+    return <p style={{ opacity: 0.6, fontSize: '13px', padding: '20px' }}>No market activity yet.</p>;
   }
 
   return (
-    <div className="activity-list">
+    <div className="activityList">
       {items.map((item) => (
-        <article key={item.id} className="activity-item">
-          <p className="activity-item__title">{item.title}</p>
-          <p className="activity-item__detail">{item.detail}</p>
-          <p className="activity-item__meta">{item.meta}</p>
+        <article key={item.id} className="activityItem">
+          <p className="activityItemTitle">{item.title}</p>
+          <p className="activityItemDetail">{item.detail}</p>
+          <p className="activityItemMeta">{item.meta}</p>
         </article>
       ))}
     </div>

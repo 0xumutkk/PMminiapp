@@ -11,7 +11,7 @@ const DEFAULT_SELL_MAX_SLIPPAGE_BPS = 200;
 
 type ActivePosition = PortfolioPositionsSnapshot["active"][number];
 
-function formatUsd(raw: string) {
+function formatUsd(raw: string | number) {
   const value = Number(raw);
   if (!Number.isFinite(value)) {
     return "$0.00";
@@ -34,39 +34,18 @@ function parseProbability(value: unknown) {
 }
 
 async function resolveSellExpectedPrice(position: ActivePosition) {
-  // Fast path: on-chain positions carry the current price directly.
   const embeddedPrice = parseProbability(position.currentPrice);
-  if (embeddedPrice !== null) {
-    return embeddedPrice;
-  }
+  if (embeddedPrice !== null) return embeddedPrice;
 
-  // Slow path: look up current price from the market API.
   const candidates = [...new Set([position.marketSlug, position.marketId].filter((item) => item.length > 0))];
-
   for (const marketId of candidates) {
-    const response = await fetch(`/api/markets/${encodeURIComponent(marketId)}`, {
-      cache: "no-store",
-      credentials: "include"
-    });
-    const body = (await response.json().catch(() => null)) as
-      | {
-        yesPrice?: unknown;
-        noPrice?: unknown;
-        error?: string;
-      }
-      | null;
-
-    if (!response.ok || !body || (typeof body.error === "string" && body.error.length > 0)) {
-      continue;
-    }
-
+    const response = await fetch(`/api/markets/${encodeURIComponent(marketId)}`, { cache: "no-store", credentials: "include" });
+    const body = (await response.json().catch(() => null));
+    if (!response.ok || !body || body.error) continue;
     const expectedPrice = parseProbability(position.side === "yes" ? body.yesPrice : body.noPrice);
-    if (expectedPrice !== null) {
-      return expectedPrice;
-    }
+    if (expectedPrice !== null) return expectedPrice;
   }
-
-  throw new Error("Could not resolve current market price for sell. Please refresh and try again.");
+  throw new Error("Could not resolve current market price for sell.");
 }
 
 export function PositionsPanel() {
@@ -74,206 +53,151 @@ export function PositionsPanel() {
   const { account, isAuthenticated, snapshot, loading, error: queryError, refetch } = usePortfolioPositions();
   const [interactionError, setInteractionError] = useState<string | null>(null);
   const [activeActionId, setActiveActionId] = useState<string | null>(null);
-  const router = useRouter();
   const error = interactionError ?? queryError;
 
   useEffect(() => {
-    if (!account || !isAuthenticated) {
-      return;
-    }
-
-    const onRefresh = () => {
-      void refetch();
-    };
-
+    if (!account || !isAuthenticated) return;
+    const onRefresh = () => { void refetch(); };
     window.addEventListener(REFRESH_EVENT_NAME, onRefresh);
-
-    return () => {
-      window.removeEventListener(REFRESH_EVENT_NAME, onRefresh);
-    };
+    return () => { window.removeEventListener(REFRESH_EVENT_NAME, onRefresh); };
   }, [account, isAuthenticated, refetch]);
 
   const activePositions = useMemo(() => snapshot?.active ?? [], [snapshot?.active]);
-  const claimableSettledPositions = useMemo(
-    () => snapshot?.settled.filter((item) => item.claimable) ?? [],
-    [snapshot?.settled]
-  );
-  const claimableCount = snapshot?.settled.filter((item) => item.claimable).length ?? 0;
+  const claimableSettledPositions = useMemo(() => snapshot?.settled.filter((item) => item.claimable) ?? [], [snapshot?.settled]);
 
-  const onSell = useCallback(
-    async (position: ActivePosition) => {
-      if (!isConnected || !account) {
-        return;
-      }
+  const onSell = useCallback(async (position: ActivePosition) => {
+    if (!isConnected || !account) return;
+    setActiveActionId(position.id);
+    try {
+      setInteractionError(null);
+      const expectedPrice = await resolveSellExpectedPrice(position);
+      await executeIntent({
+        action: "sell",
+        marketId: position.marketSlug || position.marketId,
+        side: position.side,
+        amountUsdc: Number(position.marketValueUsdc) > 0 ? position.marketValueUsdc : "1",
+        expectedPrice,
+        maxSlippageBps: DEFAULT_SELL_MAX_SLIPPAGE_BPS
+      });
+    } catch (e) {
+      setInteractionError(e instanceof Error ? e.message : "Sell failed");
+    } finally {
+      setActiveActionId(null);
+    }
+  }, [account, executeIntent, isConnected]);
 
-      setActiveActionId(position.id);
-      const amountUsdc = Number(position.marketValueUsdc) > 0 ? position.marketValueUsdc : "1";
-      try {
-        setInteractionError(null);
-        const expectedPrice = await resolveSellExpectedPrice(position);
-        await executeIntent({
-          action: "sell",
-          marketId: position.marketSlug || position.marketId,
-          side: position.side,
-          amountUsdc,
-          expectedPrice,
-          maxSlippageBps: DEFAULT_SELL_MAX_SLIPPAGE_BPS
-        });
-      } catch (sellError) {
-        const message = sellError instanceof Error ? sellError.message : "Sell request failed";
-        setInteractionError(message);
-      } finally {
-        setActiveActionId(null);
-      }
-    },
-    [account, executeIntent, isConnected]
-  );
+  const onRedeem = useCallback(async (position: PortfolioPositionsSnapshot["settled"][number]) => {
+    if (!isConnected || !account) return;
+    setActiveActionId(position.id);
+    try {
+      await executeIntent({
+        action: "redeem",
+        marketId: position.marketSlug || position.marketId,
+        side: position.side,
+        amountUsdc: position.marketValueUsdc
+      });
+    } finally {
+      setActiveActionId(null);
+    }
+  }, [account, executeIntent, isConnected]);
 
-  const onRedeem = useCallback(
-    async (position: PortfolioPositionsSnapshot["settled"][number]) => {
-      if (!isConnected || !account) {
-        return;
-      }
-
-      setActiveActionId(position.id);
-      try {
-        await executeIntent({
-          action: "redeem",
-          marketId: position.marketSlug || position.marketId,
-          side: position.side,
-          amountUsdc: position.marketValueUsdc
-        });
-      } finally {
-        setActiveActionId(null);
-      }
-    },
-    [account, executeIntent, isConnected]
-  );
-
-  if (!isAuthenticated || !account) {
-    return (
-      <section className="positions-panel">
-        <p className="positions-panel__hint">Sign in to track your positions and claimable settlements.</p>
-      </section>
-    );
-  }
+  if (!isAuthenticated || !account) return null;
 
   return (
-    <section className="positions-panel" aria-live="polite">
-      <header className="positions-panel__head">
-        <p className="positions-panel__title">My Positions</p>
-        <button type="button" onClick={() => void refetch()} disabled={loading} className="positions-panel__refresh">
-          {loading ? "Updating..." : "Refresh"}
-        </button>
-      </header>
-
-      {error ? <p className="positions-panel__error">{error}</p> : null}
-
-      <div className="positions-panel__stats">
-        <div>
-          <span>Active value</span>
-          <strong>{formatUsd(snapshot?.totals.activeMarketValueUsdc ?? "0")}</strong>
-        </div>
-        <div>
-          <span>Unrealized PnL</span>
-          <strong>{formatUsd(snapshot?.totals.unrealizedPnlUsdc ?? "0")}</strong>
-        </div>
-        <div>
-          <span>Claimable</span>
-          <strong>{formatUsd(snapshot?.totals.claimableUsdc ?? "0")}</strong>
-        </div>
-      </div>
+    <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
 
       {activePositions.length > 0 ? (
-        <ul className="positions-panel__list">
-          {activePositions.map((position) => (
-            <li key={position.id} className="positions-panel__item">
-              <div className="positions-panel__item-main">
-                <p
-                  className="positions-panel__market-link"
-                  onClick={() => {
-                    const feedId = position.marketSlug || position.marketId;
-                    router.push(`/feed?startAt=${encodeURIComponent(feedId)}`);
-                  }}
-                  role="button"
-                  tabIndex={0}
-                >
-                  {position.marketTitle}
-                </p>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span className={`positions-panel__side positions-panel__side--${position.side}`}>
-                    {position.side.toUpperCase()}
-                  </span>
-                  <span style={{ fontSize: "13px", color: "var(--text-hint)" }}>
-                    {Number(position.tokenBalance || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} Shares
-                  </span>
+        activePositions.map((position) => {
+          const prob = parseProbability(position.currentPrice);
+          const probText = prob ? `${(prob * 100).toFixed(1)}%` : "--";
+          const isRedPnL = Number(position.unrealizedPnlUsdc) < 0;
+
+          return (
+            <div key={position.id} className="positionDetailCard">
+              <div className="posContent">
+                <header className="posHeader">
+                  <div className="marketAvatar">
+                    {position.side === 'yes' ? '👍' : '👎'}
+                  </div>
+                  <div className="marketTitleBlock">
+                    <span className="marketName">{position.marketTitle}</span>
+                    <span className="marketProb">{probText}</span>
+                  </div>
+                </header>
+
+                <div className="posStatsGrid">
+                  <div className="statRow">
+                    <div className="statBox">
+                      <span className="posLabel">Worth</span>
+                      <span className="posVal valGreen">{formatUsd(position.marketValueUsdc)}</span>
+                    </div>
+                    <div className="statBox">
+                      <span className="posLabel">PNL</span>
+                      <span className={`posVal ${isRedPnL ? 'valRed' : 'valGreen'}`}>
+                        {isRedPnL ? '' : '+'}{formatUsd(position.unrealizedPnlUsdc)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="statRow">
+                    <div className="statBox">
+                      <span className="posLabel">Holdings</span>
+                      <span className="posVal valWhite">
+                        {Number(position.tokenBalance).toLocaleString()} {position.side.toUpperCase()} Shares
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="positions-panel__item-actions">
-                <p>{formatUsd(position.marketValueUsdc)}</p>
-                <span>PnL {formatUsd(position.unrealizedPnlUsdc)}</span>
+
+              <div className="actionArea">
                 <button
                   type="button"
-                  className="positions-panel__action positions-panel__action--sell"
+                  className="cashOutBtn"
                   onClick={() => void onSell(position)}
                   disabled={!isConnected || isBusy || activeActionId === position.id}
                 >
-                  {activeActionId === position.id ? "Selling..." : "Sell"}
+                  {activeActionId === position.id ? "Selling..." : "Cash Out"}
                 </button>
               </div>
-            </li>
-          ))}
-        </ul>
+            </div>
+          );
+        })
       ) : (
-        <p className="positions-panel__hint">No active positions yet.</p>
+        <p style={{ opacity: 0.6, fontSize: '13px', padding: '12px 4px' }}>No active positions yet.</p>
       )}
 
-      {claimableSettledPositions.length > 0 ? (
-        <>
-          <p className="positions-panel__section-title">Claimable settlements</p>
-          <ul className="positions-panel__list">
-            {claimableSettledPositions.map((position) => (
-              <li key={position.id} className="positions-panel__item">
-                <div className="positions-panel__item-main">
-                  <p>{position.marketTitle}</p>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span className={`positions-panel__side positions-panel__side--${position.side}`}>
-                      {position.side.toUpperCase()}
-                    </span>
-                    <span style={{ fontSize: "13px", color: "var(--text-hint)" }}>
-                      {Number(position.tokenBalance || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} Shares
-                    </span>
+      {claimableSettledPositions.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <p className="posLabel" style={{ paddingLeft: '4px' }}>Claimable settlements</p>
+          {claimableSettledPositions.map((position) => (
+            <div key={position.id} className="positionDetailCard">
+              <div className="posContent">
+                <header className="posHeader">
+                  <div className="marketAvatar" style={{ background: '#0bd52d', color: '#000' }}>💰</div>
+                  <div className="marketTitleBlock">
+                    <span className="marketName">{position.marketTitle}</span>
                   </div>
+                </header>
+                <div className="statBox">
+                  <p className="posLabel">Payout</p>
+                  <p className="posVal valGreen">{formatUsd(position.marketValueUsdc)}</p>
                 </div>
-                <div className="positions-panel__item-actions">
-                  <p>{formatUsd(position.marketValueUsdc)}</p>
-                  <span>Settled payout</span>
-                  <button
-                    type="button"
-                    className="positions-panel__action positions-panel__action--redeem"
-                    onClick={() => void onRedeem(position)}
-                    disabled={!isConnected || isBusy || activeActionId === position.id}
-                  >
-                    {activeActionId === position.id ? "Redeeming..." : "Redeem"}
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-
-      <p className="positions-panel__footer">
-        Settled positions: <strong>{snapshot?.settled.length ?? 0}</strong>
-        {claimableCount > 0 ? (
-          <>
-            {" "}
-            • claimable: <strong>{claimableCount}</strong>
-          </>
-        ) : null}
-      </p>
-      {!isConnected ? <p className="positions-panel__hint">Connect wallet to sell or redeem positions.</p> : null}
-      <p className={`trade-status trade-status--${state.status}`}>{statusLabel}</p>
+              </div>
+              <div className="actionArea">
+                <button
+                  type="button"
+                  className="cashOutBtn"
+                  onClick={() => void onRedeem(position)}
+                  disabled={!isConnected || isBusy || activeActionId === position.id}
+                >
+                  {activeActionId === position.id ? "Redeeming..." : "Redeem Now"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

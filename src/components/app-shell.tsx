@@ -107,8 +107,26 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
               <Link
                 href="/profile"
                 className={`segmented-control__item ${pathname === "/profile" ? "segmented-control__item--active" : ""}`}
+                style={{
+                  flexDirection: 'column',
+                  gap: '1px',
+                  height: '40px',
+                  padding: '2px 16px'
+                }}
               >
-                Profile
+                <span style={{ fontSize: '14px', lineHeight: '1.2' }}>Profile</span>
+                {address && (
+                  <span style={{
+                    fontSize: '10px',
+                    opacity: 0.5,
+                    fontWeight: 500,
+                    fontFamily: 'monospace',
+                    letterSpacing: '0.02em',
+                    lineHeight: '1'
+                  }}>
+                    {address.slice(0, 6)}...{address.slice(-4)}
+                  </span>
+                )}
               </Link>
             )}
           </div>

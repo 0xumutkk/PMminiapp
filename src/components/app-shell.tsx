@@ -21,30 +21,35 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
 
   return (
     <main className="app-shell">
-      <header className="app-shell__top" style={{ padding: '20px', background: 'transparent' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-          <div className="segmented-control" style={{ width: 'auto', gap: '0' }}>
+      <header className="app-shell__top">
+        <div style={{ width: '100%', height: '54px' }} /> {/* Status bar space */}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          width: '100%',
+          alignItems: 'center',
+          padding: '0 20px',
+          height: '84px'
+        }}>
+          <div className="segmented-control">
             <Link
               href="/markets"
               className={`segmented-control__item ${pathname === "/markets" ? "segmented-control__item--active" : ""}`}
-              style={{ width: '106.5px' }}
             >
               Markets
             </Link>
             <Link
               href="/feed"
               className={`segmented-control__item ${pathname === "/feed" ? "segmented-control__item--active" : ""}`}
-              style={{ width: '106.5px' }}
             >
               Feed
             </Link>
           </div>
 
-          <div className="segmented-control" style={{ width: 'auto' }}>
+          <div className="segmented-control">
             <Link
               href="/profile"
               className={`segmented-control__item ${pathname === "/profile" ? "segmented-control__item--active" : ""}`}
-              style={{ width: '106.5px', color: 'white' }}
             >
               {isConnected ? "Profile" : "Connect"}
             </Link>

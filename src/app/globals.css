@@ -75,28 +75,30 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
   padding: 4px;
-  width: 100%;
   border-radius: 999px;
-  background: var(--glass-bg);
+  background: rgba(255, 255, 255, 0.06);
   backdrop-filter: blur(var(--glass-blur));
-  border: 1px solid var(--glass-border);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  position: relative;
 }
 
 .segmented-control__item {
-  height: 32px;
+  height: 36px;
   padding: 0 16px;
   border-radius: 999px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-family: "Open Runde", sans-serif;
+  font-size: 15px;
   font-weight: 700;
-  color: var(--text-white-tertiary);
+  color: rgba(255, 255, 255, 0.45);
   text-decoration: none;
   transition: all 0.2s ease;
   white-space: nowrap;
+  min-width: 106.5px;
 }
 
 .segmented-control__item--active {
@@ -256,16 +258,21 @@ body {
   pointer-events: none;
   overflow: hidden;
   background-color: #060913;
-  z-index: -1;
+  z-index: -2;
+}
+
+.market-card__category-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: 1;
+  z-index: -2;
 }
 
 .market-card__blobs {
-  position: absolute;
-  inset: -50%;
-  pointer-events: none;
-  filter: blur(80px);
-  z-index: 0;
-  opacity: 0.6;
+  display: none;
 }
 
 .market-card__blob {
@@ -336,14 +343,25 @@ body {
 
 .market-card__veil {
   position: absolute;
-  inset: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 351px;
   pointer-events: none;
-  /* Advanced multi-layer overlay for focus and readability */
-  background:
-    /* Center clarity vignette: clear in the middle, dark at the bottom and edges */
-    radial-gradient(circle at 50% 40%, transparent 20%, rgba(2, 5, 12, 0.4) 60%, rgba(2, 5, 12, 0.95) 100%),
-    /* Overall tint for brand consistency */
-    linear-gradient(160deg, rgba(0, 82, 255, 0.08) 0%, transparent 50%);
+  z-index: 1;
+
+  /* Progressive Backdrop Blur */
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+
+  /* Black Gradient as specified in Figma */
+  background: linear-gradient(to bottom,
+      rgba(0, 0, 0, 0) 0%,
+      rgba(0, 0, 0, 1) 100%);
+
+  /* Masking to create the progressive blur effect (blur 0 at top to 24px at bottom) */
+  mask-image: linear-gradient(to bottom, transparent, black);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black);
 }
 
 .market-card__top-controls {
@@ -1427,6 +1445,13 @@ body {
     box-shadow: none;
   }
 }
+
+.market-browser {
+  padding-top: 140px !important;
+  background-color: var(--surface-black-primary);
+  min-height: 100%;
+}
+
 /* Explore View (Figma Redesign) */
 
 .explore-search-bar {
@@ -1438,8 +1463,18 @@ body {
   align-items: center;
   padding: 0 20px;
   gap: 8px;
-  box-shadow: 0 0 8px rgba(0, 0, 0, 0.16), inset 0 0 12px rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.16);
   margin-bottom: 12px;
+  position: relative;
+}
+
+.explore-search-bar__inset {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: inset 0 0 12px 0 rgba(255, 255, 255, 0.1);
+  z-index: 1;
 }
 
 .explore-search-bar input {
@@ -1451,6 +1486,8 @@ body {
   font-size: 15px;
   color: #fff;
   width: 100%;
+  position: relative;
+  z-index: 2;
 }
 
 .explore-search-bar input::placeholder {
@@ -1460,9 +1497,10 @@ body {
 .explore-categories {
   display: flex;
   gap: 8px;
-  padding: 8px;
+  padding: 8px 0;
   overflow-x: auto;
   scrollbar-width: none;
+  margin-bottom: 20px;
 }
 
 .explore-categories::-webkit-scrollbar {
@@ -1473,12 +1511,17 @@ body {
   background: var(--surface-white-quaternary);
   border-radius: 999px;
   padding: 8px 16px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-family: "Open Runde", sans-serif;
   font-weight: 700;
   font-size: 15px;
   color: var(--text-white-secondary);
   white-space: nowrap;
   transition: all 0.2s ease;
+  border: none;
 }
 
 .explore-category-chip--active {
@@ -1487,18 +1530,29 @@ body {
 }
 
 .explore-card {
+  position: relative;
   backdrop-filter: blur(50px);
+  -webkit-backdrop-filter: blur(50px);
   background: var(--surface-white-quaternary);
   border: 1.33px solid var(--stroke-white-secondary);
   border-radius: 24px;
   padding: 4px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  box-shadow: 0 0 8px 2px rgba(0, 0, 0, 0.16), inset 0 0 12px -2px rgba(255, 255, 255, 0.1);
-  margin-bottom: 20px;
+  box-shadow: 0 0 8px 2px rgba(0, 0, 0, 0.16);
+  margin-bottom: 12px;
   text-decoration: none;
   color: inherit;
+  overflow: hidden;
+}
+
+.explore-card__inset-shadow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: inset 0 0 12px -2px rgba(255, 255, 255, 0.1);
+  z-index: 10;
 }
 
 .explore-card__header {
@@ -1506,6 +1560,8 @@ body {
   gap: 12px;
   align-items: center;
   padding: 12px;
+  position: relative;
+  z-index: 2;
 }
 
 .explore-card__token {
@@ -1514,13 +1570,14 @@ body {
   border-radius: 999px;
   border: 1.12px solid var(--stroke-white-secondary);
   object-fit: cover;
+  flex-shrink: 0;
 }
 
 .explore-card__title-row {
   flex: 1;
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   min-width: 0;
 }
 
@@ -1528,13 +1585,14 @@ body {
   font-family: "Open Runde", sans-serif;
   font-weight: 700;
   font-size: 16px;
-  line-height: 1.3;
+  line-height: normal;
   color: #fff;
   margin: 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  max-width: 184px;
 }
 
 .explore-card__prob {
@@ -1542,7 +1600,7 @@ body {
   font-weight: 700;
   font-size: 24px;
   color: var(--yes-vibrant);
-  margin-left: 12px;
+  margin-left: 8px;
 }
 
 .explore-card__stats {
@@ -1550,10 +1608,13 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: relative;
+  z-index: 2;
 }
 
 .explore-card__trending {
   background: var(--trending-yellow);
+  border: 1px solid var(--stroke-white-secondary);
   border-radius: 21px;
   padding: 12px;
   width: fit-content;
@@ -1574,7 +1635,7 @@ body {
   padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 10px;
 }
 
 .explore-card__stat-label {

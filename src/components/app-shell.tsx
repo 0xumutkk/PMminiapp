@@ -1,7 +1,6 @@
 "use client";
 
 import { MiniAppContextBadge } from "@/components/miniapp-context-badge";
-import { CustomNavBar } from "@/components/custom-nav-bar";
 import { WalletStatusSlot } from "@/components/wallet-status-slot";
 
 type AppShellProps = {
@@ -60,8 +59,6 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
       <section className={`app-shell__content${scrollContent ? " app-shell__content--scroll" : ""}`}>
         {children}
       </section>
-
-      {pathname !== "/feed" && <CustomNavBar />}
     </main>
   );
 }

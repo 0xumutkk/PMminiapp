@@ -12,14 +12,17 @@ function formatPercent(value: number) {
 }
 
 function formatCompactNumber(value?: number) {
-  if (value === undefined || !Number.isFinite(value)) {
-    return "-";
+  if (value === undefined || !Number.isFinite(value) || value <= 0) {
+    return "0";
   }
 
-  return new Intl.NumberFormat("en", {
-    notation: "compact",
-    maximumFractionDigits: 1
-  }).format(value);
+  if (value >= 1_000_000) {
+    return (value / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  }
+  if (value >= 1_000) {
+    return (value / 1_000).toFixed(1).replace(/\.0$/, "") + "K";
+  }
+  return value.toFixed(0);
 }
 
 function formatCountdown(endsAt: string | undefined, nowMs: number) {
@@ -50,31 +53,6 @@ function formatCountdown(endsAt: string | undefined, nowMs: number) {
   return `${Math.max(1, Math.floor(diffMs / 1000))}s`;
 }
 
-function inferTopic(title: string) {
-  const text = title.toLowerCase();
-
-  if (/(alien|ufo|nasa|space|science)/.test(text)) {
-    return "Science";
-  }
-
-  if (/(election|president|policy|senate|government|war)/.test(text)) {
-    return "Politics";
-  }
-
-  if (/(bitcoin|eth|crypto|solana|token)/.test(text)) {
-    return "Crypto";
-  }
-
-  if (/(nfl|nba|soccer|football|final|cup)/.test(text)) {
-    return "Sports";
-  }
-
-  if (/(epstein|conspiracy|mystery|secret|cover-up)/.test(text)) {
-    return "Conspiracy";
-  }
-
-  return "Trending";
-}
 
 function hashSeed(value: string) {
   let hash = 0;
@@ -86,21 +64,6 @@ function hashSeed(value: string) {
   return hash;
 }
 
-function getBackdropStyle(marketId: string, topic: string): CSSProperties {
-  const seed = hashSeed(`${topic}-${marketId}`);
-  const hueA = seed % 360;
-  const hueB = (hueA + 44) % 360;
-  const hueC = (hueA + 156) % 360;
-
-  return {
-    backgroundImage: [
-      `radial-gradient(90% 75% at 16% 20%, hsla(${hueA} 85% 60% / 0.52) 0%, transparent 68%)`,
-      `radial-gradient(65% 55% at 82% 32%, hsla(${hueB} 88% 55% / 0.36) 0%, transparent 70%)`,
-      `radial-gradient(95% 85% at 50% 100%, hsla(${hueC} 88% 44% / 0.3) 0%, transparent 70%)`,
-      "linear-gradient(170deg, #0d142a 0%, #090d19 46%, #05070f 100%)"
-    ].join(", ")
-  };
-}
 
 function BellIcon() {
   return (
@@ -215,8 +178,6 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
   const { executeTrade, resetTradeState, isBusy, isConnected, state, statusLabel } = useTradeExecutor();
   const { isAuthenticated, status: authStatus, signIn, error: authError } = useMiniAppAuth();
 
-  const topic = useMemo(() => inferTopic(market.title), [market.title]);
-  const backdropStyle = useMemo(() => getBackdropStyle(market.id, topic), [market.id, topic]);
 
   const adjustStake = useCallback((delta: number) => {
     setAmountUsdc((prev) => {
@@ -329,20 +290,11 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
 
   return (
     <article className="market-card" data-active={isActive ? "true" : "false"}>
-      <div className="market-card__bg" style={backdropStyle} aria-hidden>
-        <div className="market-card__blobs">
-          {vibe.colors.map((color: string, i: number) => (
-            <div
-              key={i}
-              className="market-card__blob"
-              style={{
-                backgroundColor: color,
-                left: `${(i * 35) % 100}%`,
-                top: `${(i * 25) % 100}%`,
-              }}
-            />
-          ))}
-        </div>
+      <div className="market-card__bg" aria-hidden>
+        <div
+          className="market-card__category-bg"
+          style={{ backgroundImage: `url(${vibe.bgImageUrl})` }}
+        />
         {market.imageUrl && (
           <img
             src={market.imageUrl}
@@ -360,7 +312,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           <span className="trend-pill">{vibe.label}</span>
           <span className="percent-pill">{formatPercent(market.yesPrice)}</span>
           <span className="top-meta-chip">Ends {formatCountdown(market.endsAt, nowMs)}</span>
-          <span className="top-meta-chip">Vol. {formatCompactNumber(market.volume24h)}</span>
+          <span className="top-meta-chip">Vol. ${formatCompactNumber(market.volume24h)}</span>
         </div>
 
         <h2 className="market-card__title">{market.title}</h2>

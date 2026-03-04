@@ -248,7 +248,7 @@ function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
     yesPrice: prices.yesPrice,
     noPrice: prices.noPrice,
     minTradeShares: parseMinTradeShares(row),
-    volume24h: parseVolume(row),
+    volume: parseVolume(row),
     endsAt: parseEndsAt(row),
     status: normalizeStatus(row.status, row.expired),
     tradeVenue: {

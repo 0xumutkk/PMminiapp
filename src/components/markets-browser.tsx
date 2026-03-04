@@ -118,7 +118,7 @@ export function MarketsBrowser() {
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="SEARCH MARKETS..."
+          placeholder="Search Markets"
         />
       </div>
 
@@ -138,7 +138,7 @@ export function MarketsBrowser() {
         })}
       </div>
 
-      <div style={{ marginTop: '20px' }}>
+      <div style={{ marginTop: '8px' }}>
         {marketsQuery.isLoading ? (
           <p className="state-text">Loading markets...</p>
         ) : marketsQuery.error ? (
@@ -168,18 +168,13 @@ export function MarketsBrowser() {
               </div>
 
               <div className="explore-card__stats">
-                <div className="explore-card__trending">
-                  <span>{marketCategoryLabel(inferMarketCategoryId(market.title, market.categories, market.tags))}</span>
-                </div>
-
-                <div className="explore-card__stat-pill">
-                  <span className="explore-card__stat-label">Ends In</span>
-                  <span className="explore-card__stat-value">{formatEndsAt(market.endsAt)}</span>
-                </div>
-
-                <div className="explore-card__stat-pill">
-                  <span className="explore-card__stat-label">Volume</span>
-                  <span className="explore-card__stat-value">${formatCompactNumber(market.volume24h)}</span>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <div className="explore-card__trending">
+                    <span>{marketCategoryLabel(inferMarketCategoryId(market.title, market.categories, market.tags))}</span>
+                  </div>
+                  <div className="explore-card__ends-badge">
+                    <span>Ends {formatEndsAt(market.endsAt)}</span>
+                  </div>
                 </div>
               </div>
             </Link>

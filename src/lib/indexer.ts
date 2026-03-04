@@ -10,7 +10,7 @@ class MarketIndexer {
   private lastError: string | null = null;
   private lastUpdatedAt: string | null = null;
 
-  constructor(private readonly intervalMs: number) {}
+  constructor(private readonly intervalMs: number) { }
 
   async start() {
     if (this.timer) {
@@ -75,15 +75,15 @@ class MarketIndexer {
 }
 
 declare global {
-  var __marketIndexer: MarketIndexer | undefined;
+  var __marketIndexer_v2: MarketIndexer | undefined;
 }
 
 export async function getMarketIndexer() {
-  if (!globalThis.__marketIndexer) {
+  if (!globalThis.__marketIndexer_v2) {
     const intervalMs = Number(process.env.LIMITLESS_POLL_INTERVAL_MS ?? 3000);
-    globalThis.__marketIndexer = new MarketIndexer(intervalMs);
+    globalThis.__marketIndexer_v2 = new MarketIndexer(intervalMs);
   }
 
-  await globalThis.__marketIndexer.start();
-  return globalThis.__marketIndexer;
+  await globalThis.__marketIndexer_v2.start();
+  return globalThis.__marketIndexer_v2;
 }

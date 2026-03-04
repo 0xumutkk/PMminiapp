@@ -1396,7 +1396,7 @@ body {
 }
 
 .market-browser {
-  padding-top: 140px !important;
+  padding-top: 110px !important;
   background-color: var(--surface-black-primary);
   min-height: 100%;
 }
@@ -1404,26 +1404,19 @@ body {
 /* Explore View (Figma Redesign) */
 
 .explore-search-bar {
-  background: var(--surface-white-quaternary);
-  border: 1.33px solid var(--stroke-white-secondary);
+  background: rgba(255, 255, 255, 0.05);
   border-radius: 999px;
-  height: 44px;
+  height: 48px;
   display: flex;
   align-items: center;
-  padding: 0 20px;
-  gap: 8px;
-  box-shadow: 0 0 8px rgba(0, 0, 0, 0.16);
+  padding: 0 16px;
+  gap: 12px;
   margin-bottom: 12px;
   position: relative;
 }
 
 .explore-search-bar__inset {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  box-shadow: inset 0 0 12px 0 rgba(255, 255, 255, 0.1);
-  z-index: 1;
+  display: none;
 }
 
 .explore-search-bar input {
@@ -1431,8 +1424,8 @@ body {
   border: none;
   outline: none;
   font-family: "Open Runde", sans-serif;
-  font-weight: 700;
-  font-size: 15px;
+  font-weight: 500;
+  font-size: 16px;
   color: #fff;
   width: 100%;
   position: relative;
@@ -1440,7 +1433,7 @@ body {
 }
 
 .explore-search-bar input::placeholder {
-  color: var(--text-white-quaternary);
+  color: rgba(255, 255, 255, 0.4);
 }
 
 .explore-categories {
@@ -1449,7 +1442,7 @@ body {
   padding: 8px 0;
   overflow-x: auto;
   scrollbar-width: none;
-  margin-bottom: 20px;
+  margin-bottom: 8px;
 }
 
 .explore-categories::-webkit-scrollbar {
@@ -1457,24 +1450,24 @@ body {
 }
 
 .explore-category-chip {
-  background: var(--surface-white-quaternary);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 999px;
-  padding: 8px 16px;
+  padding: 8px 18px;
   height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-family: "Open Runde", sans-serif;
-  font-weight: 700;
+  font-weight: 600;
   font-size: 15px;
-  color: var(--text-white-secondary);
+  color: rgba(255, 255, 255, 0.7);
   white-space: nowrap;
   transition: all 0.2s ease;
   border: none;
 }
 
 .explore-category-chip--active {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.18);
   color: #fff;
 }
 
@@ -1508,7 +1501,7 @@ body {
   display: flex;
   gap: 12px;
   align-items: center;
-  padding: 12px;
+  padding: 12px 12px 8px;
   position: relative;
   z-index: 2;
 }
@@ -1539,6 +1532,7 @@ body {
   margin: 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   max-width: 184px;
@@ -1564,49 +1558,40 @@ body {
 .explore-card__trending {
   background: var(--trending-yellow);
   border: 1px solid var(--stroke-white-secondary);
-  border-radius: 21px;
-  padding: 12px;
+  border-radius: 999px;
+  padding: 4px 8px;
   width: fit-content;
 }
 
 .explore-card__trending span {
   font-family: "Open Runde", sans-serif;
-  font-weight: 500;
-  font-size: 13px;
+  font-weight: 600;
+  font-size: 11px;
   color: #000;
   text-transform: uppercase;
 }
 
-.explore-card__stat-pill {
+.explore-card__ends-badge {
   background: var(--surface-white-quaternary);
   border: 1px solid var(--stroke-white-secondary);
-  border-radius: 21px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  border-radius: 999px;
+  padding: 4px 8px;
+  width: fit-content;
 }
 
-.explore-card__stat-label {
+.explore-card__ends-badge span {
   font-family: "Open Runde", sans-serif;
   font-weight: 500;
-  font-size: 13px;
+  font-size: 11px;
   color: var(--text-white-tertiary);
   text-transform: uppercase;
-}
-
-.explore-card__stat-value {
-  font-family: "Open Runde", sans-serif;
-  font-weight: 500;
-  font-size: 15px;
-  color: #fff;
 }
 
 /* Profile Page Styles */
 .profileHub {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
   min-height: 100%;
   padding-bottom: 24px;
 }
@@ -1617,18 +1602,18 @@ body {
   background: linear-gradient(124.14deg, #0c1014 0%, rgba(65, 65, 65, 0) 100%);
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 28px;
-  padding: 24px 20px;
+  padding: 20px 16px;
   overflow: hidden;
   box-shadow: 0px 4px 24px 0px rgba(0, 0, 0, 0.6);
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 20px;
 }
 
 .netWorthTop {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .netWorthLabel {
@@ -1638,7 +1623,7 @@ body {
 }
 
 .netWorthValue {
-  font-size: 44px;
+  font-size: 38px;
   font-weight: 700;
   color: #ffffff;
   letter-spacing: -0.03em;
@@ -1647,21 +1632,21 @@ body {
 }
 
 .netWorthDecimals {
-  font-size: 32px;
+  font-size: 26px;
   color: rgba(255, 255, 255, 0.3);
   margin-left: 2px;
 }
 
 .netWorthStats {
   display: flex;
-  gap: 16px;
+  gap: 12px;
   align-items: center;
 }
 
 .statItem {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .statLabel {
@@ -1682,32 +1667,33 @@ body {
   background: rgba(255, 255, 255, 0.15);
 }
 
-/* Section Switcher (Figma 127:3763) - Custom "Positions" pill */
 .profileSwitch {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 999px;
   padding: 4px;
   display: flex;
-  height: 48px;
+  height: 44px;
+  gap: 4px;
+  margin-bottom: 8px;
 }
 
 .profileSwitchItem {
   flex: 1;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 999px;
   font-size: 15px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.45);
   text-decoration: none;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .profileSwitchItemActive {
-  background: rgba(45, 45, 45, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.15);
   color: #ffffff;
 }
 
@@ -1722,10 +1708,10 @@ body {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.04);
   border-radius: 20px;
-  padding: 16px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .claimCardFull {
@@ -1751,15 +1737,22 @@ body {
   flex: 1;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 20px;
-  padding: 16px;
+  border-radius: 24px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  transition: all 0.2s ease;
+  cursor: pointer;
 }
 
-.statCardActive {
-  border: 2px solid #0bd52d;
+.statCardSelected {
+  border: 4px solid #0bd52d !important;
+  opacity: 1 !important;
+}
+
+.statCard:not(.statCardSelected) {
+  opacity: 0.5;
 }
 
 .statCardValue {
@@ -1775,95 +1768,101 @@ body {
 
 /* Position Detail Cards (Figma 127:3618) */
 .positionDetailCard {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.03);
-  border-radius: 24px;
-  padding: 4px;
+  background: #0d1115;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 32px;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  box-shadow: 0px 8px 32px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(20px);
+  box-shadow: 0px 12px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  margin-bottom: 8px;
 }
 
 .posContent {
-  padding: 16px;
+  padding: 16px 16px 12px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .posHeader {
   display: flex;
-  gap: 12px;
+  gap: 16px;
   align-items: center;
 }
 
 .marketAvatar {
   width: 44px;
   height: 44px;
-  border-radius: 999px;
-  background: #1a1a1a;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: #1a1e23;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 22px;
+  flex-shrink: 0;
 }
 
 .marketTitleBlock {
   flex: 1;
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 12px;
 }
 
 .marketName {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   color: #ffffff;
-  line-height: 1.3;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  max-width: 70%;
 }
 
 .marketProb {
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 26px;
+  font-weight: 800;
   color: #ffffff;
+  letter-spacing: -0.02em;
 }
 
 .posStatsGrid {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .statRow {
   display: flex;
-  gap: 10px;
+  gap: 12px;
 }
 
 .statBox {
   flex: 1;
-  background: rgba(255, 255, 255, 0.04);
+  background: #171b1f;
   border: 1px solid rgba(255, 255, 255, 0.02);
-  border-radius: 12px;
-  padding: 12px;
+  border-radius: 14px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .posLabel {
-  font-size: 11px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.3);
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.08em;
 }
 
 .posVal {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .valGreen {
@@ -1871,7 +1870,7 @@ body {
 }
 
 .valRed {
-  color: #dc2626;
+  color: #ff3b6b;
 }
 
 .valWhite {
@@ -1879,28 +1878,55 @@ body {
 }
 
 .actionArea {
-  padding: 0 12px 12px;
+  padding: 0 20px 20px;
 }
 
 .cashOutBtn {
   width: 100%;
-  height: 44px;
-  background: rgba(45, 45, 45, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 999px;
-  color: #ffffff;
-  font-size: 15px;
+  height: 52px;
+  background: rgba(11, 213, 45, 0.1);
+  border: 1px solid rgba(11, 213, 45, 0.2);
+  border-radius: 18px;
+  color: #0bd52d;
+  font-size: 16px;
   font-weight: 700;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .cashOutBtn:active {
-  transform: scale(0.98);
-  background: rgba(55, 55, 55, 1);
+  transform: scale(0.97);
+  background: rgba(11, 213, 45, 0.15);
+}
+
+.cashOutBtn:active {
+  transform: scale(0.97);
+  background: rgba(11, 213, 45, 0.15);
+}
+
+.redeemBtn {
+  width: 100%;
+  height: 52px;
+  background: #0bd52d;
+  border: none;
+  border-radius: 24px;
+  color: #000000;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0px 0px 12px 0px rgba(255, 255, 255, 0.15);
+}
+
+.redeemBtn:active {
+  transform: scale(0.97);
+  opacity: 0.9;
 }
 
 /* Utilities */

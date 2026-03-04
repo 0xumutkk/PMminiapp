@@ -262,7 +262,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
     });
   }
 
-  const volume = market.volume24h ?? 0;
+  const volume = market.volume ?? (market as any).volume24h ?? 0;
   const latestTxHash = state.txHashes[state.txHashes.length - 1] ?? null;
   const txExplorerUrl = latestTxHash ? `https://basescan.org/tx/${latestTxHash}` : null;
   const busyMs = busySince ? Date.now() - busySince : 0;
@@ -312,7 +312,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           <span className="trend-pill">{vibe.label}</span>
           <span className="percent-pill">{formatPercent(market.yesPrice)}</span>
           <span className="top-meta-chip">Ends {formatCountdown(market.endsAt, nowMs)}</span>
-          <span className="top-meta-chip">Vol. ${formatCompactNumber(market.volume24h)}</span>
+          <span className="top-meta-chip">Vol. ${formatCompactNumber(market.volume ?? (market as any).volume24h)}</span>
         </div>
 
         <h2 className="market-card__title">{market.title}</h2>

@@ -48,7 +48,11 @@ async function resolveSellExpectedPrice(position: ActivePosition) {
   throw new Error("Could not resolve current market price for sell.");
 }
 
-export function PositionsPanel() {
+interface PositionsPanelProps {
+  filter?: "active" | "redeem";
+}
+
+export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
   const { executeIntent, isBusy, isConnected, state, statusLabel } = useTradeExecutor();
   const { account, isAuthenticated, snapshot, loading, error: queryError, refetch } = usePortfolioPositions();
   const [interactionError, setInteractionError] = useState<string | null>(null);
@@ -103,100 +107,122 @@ export function PositionsPanel() {
 
   if (!isAuthenticated || !account) return null;
 
+  if (filter === "active") {
+    return (
+      <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
+        {activePositions.length > 0 ? (
+          activePositions.map((position) => {
+            const prob = parseProbability(position.currentPrice);
+            const probText = prob ? `${(prob * 100).toFixed(1)}%` : "--";
+            const isRedPnL = Number(position.unrealizedPnlUsdc) < 0;
+
+            return (
+              <div key={position.id} className="positionDetailCard">
+                <div className="posContent">
+                  <header className="posHeader">
+                    <div className="marketAvatar">
+                      {position.side === 'yes' ? '👍' : '👎'}
+                    </div>
+                    <div className="marketTitleBlock">
+                      <span className="marketName">{position.marketTitle}</span>
+                      <span className="marketProb">{probText}</span>
+                    </div>
+                  </header>
+
+                  <div className="posStatsGrid">
+                    <div className="statRow">
+                      <div className="statBox">
+                        <span className="posLabel">Worth</span>
+                        <span className="posVal valGreen">{formatUsd(position.marketValueUsdc)}</span>
+                      </div>
+                      <div className="statBox">
+                        <span className="posLabel">PNL</span>
+                        <span className={`posVal ${isRedPnL ? 'valRed' : 'valGreen'}`}>
+                          {isRedPnL ? '' : '+'}{formatUsd(position.unrealizedPnlUsdc)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="statRow">
+                      <div className="statBox">
+                        <span className="posLabel">Holdings</span>
+                        <span className="posVal valWhite">
+                          {Number(position.tokenBalance).toLocaleString()} {position.side.toUpperCase()} Shares
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="actionArea">
+                  <button
+                    type="button"
+                    className="cashOutBtn"
+                    onClick={() => void onSell(position)}
+                    disabled={!isConnected || isBusy || activeActionId === position.id}
+                  >
+                    {activeActionId === position.id ? "Selling..." : "Cash Out"}
+                  </button>
+                </div>
+              </div>
+            )
+          })
+        ) : (
+          <p style={{ opacity: 0.6, fontSize: '13px', padding: '12px 4px' }}>No active positions yet.</p>
+        )}
+      </section>
+    );
+  }
+
   return (
-    <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+    <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
       {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
+      {claimableSettledPositions.length > 0 ? (
+        claimableSettledPositions.map((position) => (
+          <div key={position.id} className="positionDetailCard">
+            <div className="posContent">
+              <header className="posHeader">
+                <div className="marketAvatar">
+                  {position.side === 'yes' ? '👍' : '👎'}
+                </div>
+                <div className="marketTitleBlock">
+                  <span className="marketName">{position.marketTitle}</span>
+                  <span className="marketProb" style={{ color: '#0bd52d' }}>100%</span>
+                </div>
+              </header>
 
-      {activePositions.length > 0 ? (
-        activePositions.map((position) => {
-          const prob = parseProbability(position.currentPrice);
-          const probText = prob ? `${(prob * 100).toFixed(1)}%` : "--";
-          const isRedPnL = Number(position.unrealizedPnlUsdc) < 0;
-
-          return (
-            <div key={position.id} className="positionDetailCard">
-              <div className="posContent">
-                <header className="posHeader">
-                  <div className="marketAvatar">
-                    {position.side === 'yes' ? '👍' : '👎'}
+              <div className="posStatsGrid">
+                <div className="statRow">
+                  <div className="statBox">
+                    <span className="posLabel">Return</span>
+                    <span className="posVal valGreen">{formatUsd(position.marketValueUsdc)}</span>
                   </div>
-                  <div className="marketTitleBlock">
-                    <span className="marketName">{position.marketTitle}</span>
-                    <span className="marketProb">{probText}</span>
-                  </div>
-                </header>
-
-                <div className="posStatsGrid">
-                  <div className="statRow">
-                    <div className="statBox">
-                      <span className="posLabel">Worth</span>
-                      <span className="posVal valGreen">{formatUsd(position.marketValueUsdc)}</span>
-                    </div>
-                    <div className="statBox">
-                      <span className="posLabel">PNL</span>
-                      <span className={`posVal ${isRedPnL ? 'valRed' : 'valGreen'}`}>
-                        {isRedPnL ? '' : '+'}{formatUsd(position.unrealizedPnlUsdc)}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="statRow">
-                    <div className="statBox">
-                      <span className="posLabel">Holdings</span>
-                      <span className="posVal valWhite">
-                        {Number(position.tokenBalance).toLocaleString()} {position.side.toUpperCase()} Shares
-                      </span>
-                    </div>
+                </div>
+                <div className="statRow">
+                  <div className="statBox">
+                    <span className="posLabel">Holdings</span>
+                    <span className="posVal valWhite">
+                      {Number(position.tokenBalance).toLocaleString()} {position.side.toUpperCase()} Shares
+                    </span>
                   </div>
                 </div>
               </div>
-
-              <div className="actionArea">
-                <button
-                  type="button"
-                  className="cashOutBtn"
-                  onClick={() => void onSell(position)}
-                  disabled={!isConnected || isBusy || activeActionId === position.id}
-                >
-                  {activeActionId === position.id ? "Selling..." : "Cash Out"}
-                </button>
-              </div>
             </div>
-          );
-        })
+
+            <div className="actionArea">
+              <button
+                type="button"
+                className="redeemBtn"
+                onClick={() => void onRedeem(position)}
+                disabled={!isConnected || isBusy || activeActionId === position.id}
+              >
+                {activeActionId === position.id ? "Redeeming..." : "Redeem"}
+              </button>
+            </div>
+          </div>
+        ))
       ) : (
-        <p style={{ opacity: 0.6, fontSize: '13px', padding: '12px 4px' }}>No active positions yet.</p>
-      )}
-
-      {claimableSettledPositions.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <p className="posLabel" style={{ paddingLeft: '4px' }}>Claimable settlements</p>
-          {claimableSettledPositions.map((position) => (
-            <div key={position.id} className="positionDetailCard">
-              <div className="posContent">
-                <header className="posHeader">
-                  <div className="marketAvatar" style={{ background: '#0bd52d', color: '#000' }}>💰</div>
-                  <div className="marketTitleBlock">
-                    <span className="marketName">{position.marketTitle}</span>
-                  </div>
-                </header>
-                <div className="statBox">
-                  <p className="posLabel">Payout</p>
-                  <p className="posVal valGreen">{formatUsd(position.marketValueUsdc)}</p>
-                </div>
-              </div>
-              <div className="actionArea">
-                <button
-                  type="button"
-                  className="cashOutBtn"
-                  onClick={() => void onRedeem(position)}
-                  disabled={!isConnected || isBusy || activeActionId === position.id}
-                >
-                  {activeActionId === position.id ? "Redeeming..." : "Redeem Now"}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
+        <p style={{ opacity: 0.6, fontSize: '13px', padding: '12px 4px' }}>Nothing ready to redeem.</p>
       )}
     </section>
   );

@@ -1,14 +1,11 @@
 "use client";
 
 import { AppShell } from "@/components/app-shell";
-import { ProfileActivityPanel } from "@/components/profile-activity-panel";
 import { PositionsPanel } from "@/components/positions-panel";
 import { WalletStatusSlot } from "@/components/wallet-status-slot";
 import { ProfileGuard } from "@/components/profile-guard";
 import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
-import { useSearchParams } from "next/navigation";
 import { useAccount, useBalance } from "wagmi";
-import Link from "next/link";
 import React, { Suspense } from "react";
 
 const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
@@ -24,8 +21,7 @@ function formatUsd(raw: string | number) {
 }
 
 function ProfileContent() {
-  const searchParams = useSearchParams();
-  const activeView = searchParams?.get("view") === "activity" ? "activity" : "portfolio";
+  const [subView, setSubView] = React.useState<"active" | "redeem">("active");
   const { snapshot, loading: positionsLoading } = usePortfolioPositions();
   const { address } = useAccount();
 
@@ -45,7 +41,7 @@ function ProfileContent() {
   const activeCount = snapshot?.active.length ?? 0;
 
   return (
-    <div className="profileHub" style={{ paddingTop: '140px' }}>
+    <div className="profileHub" style={{ paddingTop: '110px' }}>
       {/* Header Area */}
       <div className="heroTopSection">
         <span className="controlCenterText">Control Center</span>
@@ -78,47 +74,62 @@ function ProfileContent() {
         </div>
       </section>
 
-      <nav className="profileSwitch" aria-label="Profile sections">
-        <Link
-          href="/profile?view=portfolio"
-          className={`profileSwitchItem ${activeView === "portfolio" ? 'profileSwitchItemActive' : ""}`}
-        >
+      <div className="profileSwitch">
+        <div className="profileSwitchItem profileSwitchItemActive">
           Positions
-        </Link>
-        <Link
-          href="/profile?view=activity"
-          className={`profileSwitchItem ${activeView === "activity" ? 'profileSwitchItemActive' : ""}`}
-        >
-          Activity
-        </Link>
-      </nav>
+        </div>
+      </div>
 
       {/* Status Row (Figma 127:3726) */}
       <div className="claimRow">
         <div className="claimCard claimCardFull">
-          <span className="claimLabel">Claimable: {positionsLoading ? "$..." : formatUsd(snapshot?.totals.claimableUsdc ?? 0)}</span>
-          <span className="claimValue">
-            {claimableCount} markets to redeem
-          </span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <span className="claimLabel">Claimable: {positionsLoading ? "$..." : formatUsd(snapshot?.totals.claimableUsdc ?? 0)}</span>
+              <span className="claimValue">
+                {claimableCount} markets to redeem
+              </span>
+            </div>
+            {claimableCount > 0 && subView !== 'redeem' && (
+              <button
+                onClick={() => setSubView('redeem')}
+                className="redeemViewBtn"
+                style={{
+                  background: '#0bd52d',
+                  color: '#000',
+                  border: 'none',
+                  borderRadius: '12px',
+                  padding: '8px 16px',
+                  fontSize: '13px',
+                  fontWeight: '700',
+                  cursor: 'pointer'
+                }}
+              >
+                View
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
       <div className="claimRow">
-        <div className={`statCard ${activeCount > 0 ? 'statCardActive' : ''}`}>
+        <div
+          className={`statCard ${subView === 'active' ? 'statCardSelected' : ''}`}
+          onClick={() => setSubView('active')}
+        >
           <span className="statCardLabel">Active Markets</span>
           <span className="statCardValue">{activeCount}</span>
         </div>
-        <div className="statCard" style={{ opacity: claimableCount > 0 ? 1 : 0.6 }}>
+        <div
+          className={`statCard ${subView === 'redeem' ? 'statCardSelected' : ''}`}
+          onClick={() => setSubView('redeem')}
+        >
           <span className="statCardLabel">Ready To Redeem</span>
           <span className="statCardValue">{claimableCount}</span>
         </div>
       </div>
 
-      {activeView === "portfolio" ? (
-        <PositionsPanel />
-      ) : (
-        <ProfileActivityPanel />
-      )}
+      <PositionsPanel filter={subView} />
     </div>
   );
 }

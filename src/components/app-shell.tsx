@@ -145,41 +145,42 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
                     />
                     <div style={{
                       position: 'absolute',
-                      top: 'calc(100% + 8px)',
-                      right: 0,
-                      width: '160px',
-                      background: 'rgba(12, 16, 20, 0.95)',
-                      backdropFilter: 'blur(16px)',
-                      borderRadius: '16px',
-                      border: '1px solid rgba(255, 255, 255, 0.1)',
-                      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
+                      top: 'calc(100% + 12px)',
+                      right: '2px',
+                      width: '130px',
+                      background: 'rgba(0, 0, 0, 0.7)',
+                      backdropFilter: 'blur(64px)',
+                      WebkitBackdropFilter: 'blur(64px)',
+                      borderRadius: '20px',
+                      border: '1px solid rgba(255, 255, 255, 0.45)',
+                      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.25)',
                       overflow: 'hidden',
                       zIndex: 100,
                       display: 'flex',
                       flexDirection: 'column',
-                      padding: '4px'
+                      padding: '6px'
                     }}>
                       <Link
                         href="/profile"
                         onClick={() => setShowDropdown(false)}
                         style={{
-                          padding: '12px 16px',
+                          padding: '10px 14px',
                           color: '#fff',
                           textDecoration: 'none',
                           fontSize: '14px',
                           fontWeight: 600,
-                          borderRadius: '12px',
+                          borderRadius: '14px',
                           transition: 'background 0.2s',
                           display: 'flex',
                           alignItems: 'center',
                           gap: '8px'
                         }}
-                        onMouseEnter={(e: React.MouseEvent<HTMLAnchorElement>) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)')}
+                        onMouseEnter={(e: React.MouseEvent<HTMLAnchorElement>) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)')}
                         onMouseLeave={(e: React.MouseEvent<HTMLAnchorElement>) => (e.currentTarget.style.background = 'transparent')}
                       >
                         View Profile
                       </Link>
-                      <div style={{ height: '1px', background: 'rgba(255, 255, 255, 0.1)', margin: '4px 8px' }} />
+                      <div style={{ height: '1px', background: 'rgba(255, 255, 255, 0.2)', margin: '4px 8px' }} />
                       <button
                         onClick={() => {
                           void signOut();
@@ -188,7 +189,7 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
                           router.push('/markets');
                         }}
                         style={{
-                          padding: '12px 16px',
+                          padding: '10px 14px',
                           color: '#ff3b6b',
                           background: 'transparent',
                           border: 'none',
@@ -196,13 +197,13 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
                           fontSize: '14px',
                           fontWeight: '600',
                           cursor: 'pointer',
-                          borderRadius: '12px',
+                          borderRadius: '14px',
                           transition: 'background 0.2s',
                           display: 'flex',
                           alignItems: 'center',
                           gap: '8px'
                         }}
-                        onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => (e.currentTarget.style.background = 'rgba(255, 59, 107, 0.1)')}
+                        onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => (e.currentTarget.style.background = 'rgba(255, 59, 107, 0.15)')}
                         onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => (e.currentTarget.style.background = 'transparent')}
                       >
                         Sign Out

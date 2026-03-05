@@ -77,10 +77,11 @@ body {
   justify-content: space-between;
   padding: 4px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.099);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.432);
+  box-shadow: 0 4px 16px rgba(9, 9, 9, 0.378);
   position: relative;
 }
 
@@ -94,7 +95,7 @@ body {
   font-family: "Open Runde", sans-serif;
   font-size: 15px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.65);
   text-decoration: none;
   transition: all 0.2s ease;
   white-space: nowrap;
@@ -385,7 +386,7 @@ body {
   position: absolute;
   left: 12px;
   right: 12px;
-  bottom: 16px;
+  bottom: 44px;
   z-index: 5;
   display: grid;
   gap: 6px;
@@ -2089,7 +2090,7 @@ body {
 /* Floating Price Badge (Per-Card) */
 .market-card__price-badge {
   position: absolute;
-  top: 12px;
+  top: 110px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;

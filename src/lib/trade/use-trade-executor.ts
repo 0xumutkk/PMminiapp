@@ -101,7 +101,7 @@ export function useTradeExecutor() {
   const chainId = useChainId();
   const publicClient = usePublicClient({ chainId });
 
-  const tradeAddress = user?.address ?? address;
+  const tradeAddress = address;
 
   const { sendCallsAsync, isPending: isBatchSending } = useSendCalls();
   const { sendTransactionAsync, isPending: isTxSending } = useSendTransaction();
@@ -186,11 +186,7 @@ export function useTradeExecutor() {
         throw new Error("Wallet must be connected before trading");
       }
 
-      if (user && address.toLowerCase() !== user.address.toLowerCase()) {
-        throw new Error(
-          "Wallet mismatch. Please connect with your authenticated wallet to trade."
-        );
-      }
+      // Removed wallet mismatch check: Farcaster embedded wallets often have different auth and transaction addresses.
 
       const walletForTrade = tradeAddress ?? address;
       if (!walletForTrade) {

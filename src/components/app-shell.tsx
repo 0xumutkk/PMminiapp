@@ -57,7 +57,8 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
           width: '100%',
           alignItems: 'center',
           padding: '0 20px',
-          height: '84px'
+          height: '84px',
+          gap: '20px'
         }}>
           <div className="segmented-control">
             <Link

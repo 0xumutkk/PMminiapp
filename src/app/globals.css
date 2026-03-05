@@ -98,7 +98,7 @@ body {
   text-decoration: none;
   transition: all 0.2s ease;
   white-space: nowrap;
-  min-width: 106.5px;
+  min-width: 80px;
 }
 
 .segmented-control__item--active {

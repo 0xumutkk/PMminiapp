@@ -11,6 +11,9 @@ import {
 } from "@/lib/market-category";
 import { getMarketVibe } from "@/lib/vibe-utils";
 import { useQuery } from "@tanstack/react-query";
+import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
+import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
+import { useAccount } from "wagmi";
 
 function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
@@ -78,6 +81,10 @@ export function MarketsBrowser() {
     queryFn: fetchMarketsSnapshot
   });
 
+  const { snapshot } = usePortfolioPositions();
+  const { isAuthenticated } = useMiniAppAuth();
+  const { isConnected } = useAccount();
+
   const markets = useMemo(
     () => sortByEndingSoon(marketsQuery.data?.markets ?? []),
     [marketsQuery.data?.markets]
@@ -138,7 +145,7 @@ export function MarketsBrowser() {
         })}
       </div>
 
-      <div style={{ marginTop: '8px' }}>
+      <div style={{ marginTop: '0px' }}>
         {marketsQuery.isLoading ? (
           <p className="state-text">Loading markets...</p>
         ) : marketsQuery.error ? (
@@ -166,6 +173,27 @@ export function MarketsBrowser() {
                   <span className="explore-card__prob">{formatPercent(market.yesPrice)}</span>
                 </div>
               </div>
+
+              {(() => {
+                if (!snapshot || !isAuthenticated || !isConnected) return null;
+                const venueAddr = market.tradeVenue?.venueExchange?.toLowerCase();
+
+                const pos = snapshot.active.find(p =>
+                  p.marketSlug === market.id ||
+                  p.marketId === market.id ||
+                  (venueAddr && p.marketId.toLowerCase() === venueAddr)
+                );
+                if (!pos) return null;
+                return (
+                  <div style={{ padding: '0 12px' }}>
+                    <div className={`explore-card__position-badge explore-card__position-badge--${pos.side}`}>
+                      <span>
+                        {pos.side === 'yes' ? '👍' : '👎'} {pos.side.toUpperCase()} POSITION
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="explore-card__stats">
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>

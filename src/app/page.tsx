@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import MarketsPage from "./markets/page";
 
 export default function HomePage() {
-  redirect("/markets");
+  return <MarketsPage />;
 }

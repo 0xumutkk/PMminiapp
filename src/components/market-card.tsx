@@ -7,6 +7,9 @@ import { Market } from "@/lib/market-types";
 import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 
+import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
+import { useTokenPrice } from "@/lib/crypto-price";
+
 function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
 }
@@ -177,6 +180,20 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
 
   const { executeTrade, resetTradeState, isBusy, isConnected, state, statusLabel } = useTradeExecutor();
   const { isAuthenticated, status: authStatus, signIn, error: authError } = useMiniAppAuth();
+  const { snapshot } = usePortfolioPositions();
+  const vibe = useMemo(() => getMarketVibe(market.title, market.id, market.categories, market.tags), [market.title, market.id, market.categories, market.tags]);
+  const { base, quote, price } = useTokenPrice(market.title, vibe.label.toLowerCase());
+
+  const userPosition = useMemo(() => {
+    if (!snapshot || !isAuthenticated || !isConnected) return null;
+    const venueAddr = market.tradeVenue?.venueExchange?.toLowerCase();
+
+    return snapshot.active.find(p =>
+      p.marketSlug === market.id ||
+      p.marketId === market.id ||
+      (venueAddr && p.marketId.toLowerCase() === venueAddr)
+    );
+  }, [snapshot, market.id, market.tradeVenue?.venueExchange, isAuthenticated, isConnected]);
 
 
   const adjustStake = useCallback((delta: number) => {
@@ -286,7 +303,8 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           ? state.error ?? "Trade failed"
           : "";
 
-  const vibe = useMemo(() => getMarketVibe(market.title, market.id, market.categories, market.tags), [market.title, market.id, market.categories, market.tags]);
+
+
 
   return (
     <article className="market-card" data-active={isActive ? "true" : "false"}>
@@ -295,55 +313,73 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           className="market-card__category-bg"
           style={{ backgroundImage: `url(${vibe.bgImageUrl})` }}
         />
-        {market.imageUrl && (
-          <img
-            src={market.imageUrl}
-            alt=""
-            className="market-card__image"
-          />
-        )}
       </div>
       <div className="market-card__veil" aria-hidden />
 
-
+      {price !== null && (
+        <div className="market-card__price-badge">
+          <div className="market-card__price-dot" />
+          <span>
+            {base}/{quote}: {price.toLocaleString(undefined, {
+              maximumFractionDigits: quote === "USD" || quote === "USDT" || quote === "EUR" ? 2 : 0
+            })} {quote}
+          </span>
+        </div>
+      )}
 
       <section className="market-card__content">
         <div className="market-card__meta-row">
           <span className="trend-pill">{vibe.label}</span>
           <span className="percent-pill">{formatPercent(market.yesPrice)}</span>
           <span className="top-meta-chip">Ends {formatCountdown(market.endsAt, nowMs)}</span>
-          <span className="top-meta-chip">Vol. ${formatCompactNumber(market.volume ?? (market as any).volume24h)}</span>
         </div>
 
         <h2 className="market-card__title">{market.title}</h2>
 
+        {userPosition && (
+          <div className="market-card__position-badge">
+            <span className={`pos-badge-side pos-badge-side--${userPosition.side}`}>
+              {userPosition.side === 'yes' ? '👍' : '👎'} {userPosition.side.toUpperCase()}
+            </span>
+            <span className="pos-badge-value">
+              {Number(userPosition.tokenBalance).toLocaleString()} shares · ${Number(userPosition.marketValueUsdc).toFixed(2)}
+            </span>
+          </div>
+        )}
+
         <div className="stake-presets" style={{ marginTop: '16px', marginBottom: '16px' }}>
           <div className="stake-control">
-            <span>Stake $</span>
-            <input
-              type="number"
-              className="stake-input"
-              value={amountUsdc}
-              onChange={(e) => setAmountUsdc(e.target.value)}
-              style={{
-                background: 'rgba(255,255,255,0.15)',
-                border: 'none',
-                borderRadius: '999px',
-                padding: '4px 12px',
-                width: '64px',
-                color: '#fff',
-                fontWeight: '700',
-                outline: 'none',
-                fontSize: '15px'
-              }}
-            />
+            <span style={{ opacity: 0.8 }}>Stake $</span>
+            <div className="stake-input-wrapper">
+              <input
+                type="number"
+                value={amountUsdc}
+                onChange={(e) => setAmountUsdc(e.target.value)}
+              />
+              <div className="stake-adjust-column">
+                <button
+                  type="button"
+                  className="stake-adjust-btn"
+                  onClick={() => adjustStake(1)}
+                >
+                  +
+                </button>
+                <div className="stake-adjust-divider" />
+                <button
+                  type="button"
+                  className="stake-adjust-btn"
+                  onClick={() => adjustStake(-1)}
+                >
+                  -
+                </button>
+              </div>
+            </div>
           </div>
-          {[5, 50, 100, 150].map((preset) => (
+          {[5, 50, 100].map((preset) => (
             <button
               key={preset}
               type="button"
-              className="stake-preset-btn"
-              style={{ background: amountUsdc === preset.toString() ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)', borderRadius: '999px' }}
+              className={`stake-preset-btn ${amountUsdc === preset.toString() ? 'stake-preset-btn--active' : ''}`}
               onClick={() => setAmountUsdc(preset.toString())}
               disabled={isBusy}
             >

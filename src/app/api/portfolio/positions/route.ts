@@ -11,6 +11,7 @@ export const runtime = "nodejs";
  * that have positionIds — required for on-chain balance reading.
  */
 const CT_ADDRESS = "0xC9c98965297Bc527861c898329Ee280632B76e18";
+const CT_ADDRESS_LOWER = CT_ADDRESS.toLowerCase();
 
 /**
  * Fetch FPMM addresses from the wallet's ERC-1155 token transfer history
@@ -19,31 +20,75 @@ const CT_ADDRESS = "0xC9c98965297Bc527861c898329Ee280632B76e18";
  */
 async function fetchFpmmAddressesFromTransferHistory(account: string): Promise<string[]> {
   try {
-    const url = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=to`;
-    const response = await fetch(url, {
-      headers: { Accept: "application/json" },
-      cache: "no-store"
-    });
-    if (!response.ok) return [];
-
-    const payload = (await response.json()) as { items?: unknown[] };
-    const items = Array.isArray(payload.items) ? payload.items : [];
-
     const fpmmAddresses = new Set<string>();
-    for (const item of items) {
-      if (typeof item !== "object" || item === null) continue;
-      const r = item as Record<string, unknown>;
-      // Only ERC-1155 transfers from contracts that received tokens to the wallet
-      if (r.token_type !== "ERC-1155") continue;
-      const token = r.token as Record<string, unknown> | undefined;
-      if (token?.address_hash !== CT_ADDRESS) continue;
-      // The `from` field is the FPMM that sent us the ERC-1155 tokens
-      const from = r.from as Record<string, unknown> | undefined;
-      const fromHash = typeof from?.hash === "string" ? from.hash : undefined;
-      if (fromHash && isAddress(fromHash)) {
-        fpmmAddresses.add(fromHash);
+    const mintTxHashes = new Set<string>(); // tx hashes for mints (from=0x0)
+    const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+    // Paginate through up to 3 pages to catch older transfers
+    let nextPageParams: string | null = null;
+    for (let page = 0; page < 3; page++) {
+      const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=to&type=ERC-1155`;
+      const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        cache: "no-store"
+      });
+      if (!response.ok) break;
+
+      const payload = (await response.json()) as { items?: unknown[]; next_page_params?: Record<string, unknown> | null };
+      const items = Array.isArray(payload.items) ? payload.items : [];
+
+      for (const item of items) {
+        if (typeof item !== "object" || item === null) continue;
+        const r = item as Record<string, unknown>;
+        if (r.token_type !== "ERC-1155") continue;
+        const token = r.token as Record<string, unknown> | undefined;
+        if (typeof token?.address_hash !== "string" || token.address_hash.toLowerCase() !== CT_ADDRESS_LOWER) continue;
+
+        const from = r.from as Record<string, unknown> | undefined;
+        const fromHash = typeof from?.hash === "string" ? from.hash.toLowerCase() : undefined;
+
+        if (fromHash && fromHash !== ZERO_ADDRESS && isAddress(fromHash)) {
+          // Direct transfer from FPMM to wallet
+          fpmmAddresses.add(fromHash);
+        } else if (!fromHash || fromHash === ZERO_ADDRESS) {
+          // Mint (splitPosition) — need to look up tx to find the FPMM
+          const txHash = typeof r.tx_hash === "string" ? r.tx_hash : undefined;
+          if (txHash) mintTxHashes.add(txHash);
+        }
+      }
+
+      // Check for next page
+      if (payload.next_page_params && typeof payload.next_page_params === "object") {
+        const params = new URLSearchParams();
+        for (const [k, v] of Object.entries(payload.next_page_params)) {
+          if (v !== null && v !== undefined) params.set(k, String(v));
+        }
+        nextPageParams = params.toString();
+      } else {
+        break; // no more pages
       }
     }
+
+    // For mint transfers, resolve the FPMM by fetching the originating transaction
+    // Limit to 10 tx lookups to avoid hammering the API
+    const txsToResolve = Array.from(mintTxHashes).slice(0, 10);
+    await Promise.all(
+      txsToResolve.map(async (txHash) => {
+        try {
+          const txUrl = `https://base.blockscout.com/api/v2/transactions/${txHash}`;
+          const txResp = await fetch(txUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
+          if (!txResp.ok) return;
+          const tx = (await txResp.json()) as Record<string, unknown>;
+          const toRecord = tx.to as Record<string, unknown> | undefined;
+          const toHash = typeof toRecord?.hash === "string" ? toRecord.hash : undefined;
+          if (toHash && isAddress(toHash)) {
+            fpmmAddresses.add(toHash.toLowerCase());
+          }
+        } catch { /* non-fatal */ }
+      })
+    );
+
     return Array.from(fpmmAddresses);
   } catch {
     return [];
@@ -59,7 +104,7 @@ async function fetchAmmMarketsForOnchain(account: string): Promise<AmmMarketRef[
   const limit = 25;
   const markets: AmmMarketRef[] = [];
 
-  for (let page = 1; page <= 4; page++) {
+  for (let page = 1; page <= 6; page++) {
     try {
       const url = new URL("/markets/active", baseUrl);
       url.searchParams.set("page", String(page));
@@ -68,11 +113,21 @@ async function fetchAmmMarketsForOnchain(account: string): Promise<AmmMarketRef[
       url.searchParams.set("tradeType", "amm");
 
       const response = await fetch(url.toString(), {
-        headers: { Accept: "application/json" },
-        cache: "no-store"
+        headers: {
+          Accept: "application/json",
+          Origin: "https://limitless.exchange",
+          Referer: "https://limitless.exchange/",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        },
+        cache: "no-store",
+        // @ts-ignore
+        next: { revalidate: 0 }
       });
 
-      if (!response.ok) break;
+      if (!response.ok) {
+        console.error(`Limitless API error: ${response.status} for ${url}`);
+        break;
+      }
 
       const payload = (await response.json()) as {
         data?: unknown[];
@@ -127,7 +182,8 @@ async function fetchAmmMarketsForOnchain(account: string): Promise<AmmMarketRef[
         (typeof payload.totalMarketsCount === "number" ? payload.totalMarketsCount : 0) / limit
       );
       if (page >= totalPages) break;
-    } catch {
+    } catch (e) {
+      console.error("fetchAmmMarketsForOnchain page error", e);
       break;
     }
   }
@@ -201,24 +257,15 @@ export async function GET(request: Request) {
   }
 
   try {
-    // 1. Try the Limitless portfolio API first.
-    const snapshot = await fetchPublicPortfolioPositions(account);
-
-    // If the API returned data but positions are all empty, we still try on-chain
-    // because the user might not be registered on Limitless (404 → empty snapshot).
-    const hasApiPositions =
-      snapshot.active.length > 0 || snapshot.settled.length > 0;
-
-    if (hasApiPositions) {
-      return Response.json(snapshot, { headers });
-    }
-
-    // 2. Fall back: read ERC-1155 balances directly from Base.
+    // read ERC-1155 balances directly from Base.
     const ammMarkets = await fetchAmmMarketsForOnchain(account);
     const onchainSnapshot = await fetchOnchainAmmPositions(
       account as `0x${string}`,
       ammMarkets
     );
+
+    console.log(`[Positions API] Discovered ${ammMarkets.length} candidate markets. Found ${onchainSnapshot.active.length} active and ${onchainSnapshot.settled.length} settled positions for ${account}`);
+
     return Response.json(onchainSnapshot, { headers });
   } catch (error) {
     const message =

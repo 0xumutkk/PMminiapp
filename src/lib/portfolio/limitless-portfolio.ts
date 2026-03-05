@@ -485,7 +485,7 @@ function normalizePortfolioPositions(
     if (pos) positions.push(pos);
   }
 
-  const active = positions.filter((position) => position.status === "active");
+  const active = positions.filter((position) => position.status === "active" && Number(position.tokenBalance) >= 0.1);
   const settled = positions.filter((position) => position.status === "settled");
 
   return {

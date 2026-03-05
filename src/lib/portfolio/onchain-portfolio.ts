@@ -53,6 +53,7 @@ export type AmmMarketRef = {
 
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 const CT_ADDRESS = "0xC9c98965297Bc527861c898329Ee280632B76e18";
+const CT_ADDRESS_LOWER = CT_ADDRESS.toLowerCase();
 
 function createViemClient() {
     const rpcUrl =
@@ -67,27 +68,66 @@ function createViemClient() {
  */
 export async function fetchFpmmAddressesFromHistory(account: string): Promise<string[]> {
     try {
-        const url = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=to`;
-        const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
-        if (!response.ok) return [];
-        const payload = (await response.json()) as { items?: unknown[] };
-        const items = Array.isArray(payload.items) ? payload.items : [];
         const fpmmAddresses = new Set<string>();
-        for (const item of items) {
-            if (typeof item !== "object" || item === null) continue;
-            const r = item as Record<string, unknown>;
-            if (r.token_type !== "ERC-1155") continue;
-            const token = r.token as Record<string, unknown> | undefined;
-            if (token?.address_hash !== CT_ADDRESS) continue;
-            const from = r.from as Record<string, unknown> | undefined;
-            const fromHash = typeof from?.hash === "string" ? from.hash : undefined;
-            if (fromHash && isAddress(fromHash)) fpmmAddresses.add(fromHash);
+        const mintTxHashes = new Set<string>();
+        const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+        let nextPageParams: string | null = null;
+        for (let page = 0; page < 3; page++) {
+            const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=to&type=ERC-1155`;
+            const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
+            const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+            if (!response.ok) break;
+            const payload = (await response.json()) as { items?: unknown[]; next_page_params?: Record<string, unknown> | null };
+            const items = Array.isArray(payload.items) ? payload.items : [];
+            for (const item of items) {
+                if (typeof item !== "object" || item === null) continue;
+                const r = item as Record<string, unknown>;
+                if (r.token_type !== "ERC-1155") continue;
+                const token = r.token as Record<string, unknown> | undefined;
+                if (typeof token?.address_hash !== "string" || token.address_hash.toLowerCase() !== CT_ADDRESS_LOWER) continue;
+                const from = r.from as Record<string, unknown> | undefined;
+                const fromHash = typeof from?.hash === "string" ? from.hash.toLowerCase() : undefined;
+                if (fromHash && fromHash !== ZERO_ADDRESS && isAddress(fromHash)) {
+                    fpmmAddresses.add(fromHash);
+                } else if (!fromHash || fromHash === ZERO_ADDRESS) {
+                    const txHash = typeof r.tx_hash === "string" ? r.tx_hash : undefined;
+                    if (txHash) mintTxHashes.add(txHash);
+                }
+            }
+            if (payload.next_page_params && typeof payload.next_page_params === "object") {
+                const params = new URLSearchParams();
+                for (const [k, v] of Object.entries(payload.next_page_params)) {
+                    if (v !== null && v !== undefined) params.set(k, String(v));
+                }
+                nextPageParams = params.toString();
+            } else {
+                break;
+            }
         }
+
+        // For mint transfers (from=0x0 / splitPosition), resolve FPMM via transaction lookup
+        const txsToResolve = Array.from(mintTxHashes).slice(0, 10);
+        await Promise.all(
+            txsToResolve.map(async (txHash) => {
+                try {
+                    const txUrl = `https://base.blockscout.com/api/v2/transactions/${txHash}`;
+                    const txResp = await fetch(txUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
+                    if (!txResp.ok) return;
+                    const tx = (await txResp.json()) as Record<string, unknown>;
+                    const toRecord = tx.to as Record<string, unknown> | undefined;
+                    const toHash = typeof toRecord?.hash === "string" ? toRecord.hash : undefined;
+                    if (toHash && isAddress(toHash)) fpmmAddresses.add(toHash.toLowerCase());
+                } catch { /* non-fatal */ }
+            })
+        );
+
         return Array.from(fpmmAddresses);
     } catch {
         return [];
     }
 }
+
 
 // Cache: fpmmAddress → { ctAddress, conditionId, yesPositionId, noPositionId }
 const fpmmCache = new Map<string, { ctAddress: `0x${string}`; conditionId: `0x${string}`; yesId: bigint; noId: bigint }>();
@@ -343,7 +383,7 @@ export async function fetchOnchainAmmPositions(
         }
     }
 
-    const active = positions.filter((p) => p.status === "active");
+    const active = positions.filter((p) => p.status === "active" && Number(p.tokenBalance) >= 0.1);
     const settled = positions.filter((p) => p.status === "settled");
     const totalActiveValue = active.reduce((sum, p) => sum + Number(p.marketValueUsdc), 0);
     const totalClaimable = settled.filter((p) => p.claimable).reduce((sum, p) => sum + Number(p.marketValueUsdc), 0);

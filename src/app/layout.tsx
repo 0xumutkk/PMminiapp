@@ -106,6 +106,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
+      <head>
+        <meta name="base:app_id" content="699d5dca4fa7a77f84a9ffec" />
+      </head>
       <body>
         <Script id="miniapp-runtime-guards" strategy="beforeInteractive">
           {`

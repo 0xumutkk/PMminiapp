@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Script from "next/script";
 import "./globals.css";
 import { AppProviders } from "@/components/providers";
+import { LegalDisclaimer } from "@/components/legal-disclaimer";
 
 function resolveMetadataBase(raw: string | undefined) {
   if (!raw) {
@@ -241,7 +242,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             })();
           `}
         </Script>
-        <AppProviders>{children}</AppProviders>
+        <AppProviders>
+          <LegalDisclaimer />
+          {children}
+        </AppProviders>
       </body>
     </html>
   );

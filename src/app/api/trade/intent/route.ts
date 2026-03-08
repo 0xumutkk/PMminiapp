@@ -40,7 +40,8 @@ async function resolveViableSellAmount(
   fpmmAddress: `0x${string}`,
   outcomeIndex: bigint,
   maxSharesToBurnUnits: bigint,
-  decimals: number
+  decimals: number,
+  slippageBps: number
 ): Promise<{ amountUsdc: string; maxTokensRaw: string }> {
   const rpcUrl = process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org";
   const client = createPublicClient({ chain: base, transport: http(rpcUrl) });
@@ -84,8 +85,8 @@ async function resolveViableSellAmount(
   }
 
   // Authorize burning exactly the units the user asked to sell, 
-  // but ask for 1% less USDC as a slippage safety buffer to ensure execution succeeds.
-  const safeReturnUnits = (bestReturn * 99n) / 100n;
+  // but ask for less USDC as a slippage safety buffer to ensure execution succeeds.
+  const safeReturnUnits = (bestReturn * BigInt(Math.max(0, 10000 - slippageBps))) / 10000n;
 
   if (safeReturnUnits === 0n) {
     throw new Error("Fractional sell amount too small to process over slippage bounds.");
@@ -635,6 +636,7 @@ export async function POST(request: Request) {
       // 4b. Preflight: find the max viable returnAmount the pool can honour.
       //     FPMM sell() reverts with SafeMath if returnAmount > pool's liquidity.
       //     Only applies to AMM sell (sell(uint256,uint256,uint256)), not CLOB sellShares.
+      const requestedMaxSlippage = maxSlippageBps ?? 200;
       const isAmmSell =
         (functionSignature ?? "").toLowerCase().startsWith("sell(uint256") &&
         !!process.env.NEXT_PUBLIC_BASE_RPC_URL &&
@@ -650,7 +652,8 @@ export async function POST(request: Request) {
             tradeContract as `0x${string}`,
             outcomeIdx,
             boundedSellUnits,
-            usdcDecimals
+            usdcDecimals,
+            requestedMaxSlippage
           );
           amountUsdc = viable.amountUsdc;
           dynamicMaxTokensRaw = viable.maxTokensRaw;

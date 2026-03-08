@@ -6,6 +6,7 @@ import { getMarketVibe } from "@/lib/vibe-utils";
 import { Market } from "@/lib/market-types";
 import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
+import Link from "next/link";
 
 import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
 import { useTokenPrice } from "@/lib/crypto-price";
@@ -177,6 +178,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
   const maxSlippageBps = 200;
   const [busySince, setBusySince] = useState<number | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [bgLoaded, setBgLoaded] = useState(false);
 
   const { executeTrade, resetTradeState, isBusy, isConnected, state, statusLabel } = useTradeExecutor();
   const { isAuthenticated, status: authStatus, signIn, error: authError } = useMiniAppAuth();
@@ -307,11 +309,25 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
 
 
   return (
-    <article className="market-card" data-active={isActive ? "true" : "false"}>
-      <div className="market-card__bg" aria-hidden>
-        <div
+    <article className="market-card" data-active={isActive ? "true" : "false"} data-vibe={vibe.label.toLowerCase()}>
+      <div
+        className="market-card__bg"
+        aria-hidden
+        style={{
+          background: `linear-gradient(135deg, ${vibe.colors[0]} 0%, ${vibe.colors[1]} 50%, ${vibe.colors[2]} 100%)`,
+        }}
+      >
+        <img
+          src={vibe.bgImageUrl}
           className="market-card__category-bg"
-          style={{ backgroundImage: `url(${vibe.bgImageUrl})` }}
+          alt=""
+          loading="lazy"
+          onLoad={() => setBgLoaded(true)}
+          style={{
+            opacity: bgLoaded ? 1 : 0,
+            transition: 'opacity 0.8s ease-in-out',
+            filter: 'none', // Strictly no filters as requested
+          }}
         />
       </div>
       <div className="market-card__veil" aria-hidden />
@@ -348,31 +364,32 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
         )}
 
         <div className="stake-presets" style={{ marginTop: '16px', marginBottom: '16px' }}>
-          <div className="stake-control">
-            <span style={{ opacity: 0.8 }}>Stake $</span>
-            <div className="stake-input-wrapper">
+          <div className="stake-pill">
+            <span className="stake-pill__label">Stake</span>
+            <div className="stake-pill__input-container">
+              <span>$</span>
               <input
                 type="number"
                 value={amountUsdc}
                 onChange={(e) => setAmountUsdc(e.target.value)}
               />
-              <div className="stake-adjust-column">
-                <button
-                  type="button"
-                  className="stake-adjust-btn"
-                  onClick={() => adjustStake(1)}
-                >
-                  +
-                </button>
-                <div className="stake-adjust-divider" />
-                <button
-                  type="button"
-                  className="stake-adjust-btn"
-                  onClick={() => adjustStake(-1)}
-                >
-                  -
-                </button>
-              </div>
+            </div>
+            <div className="stake-pill__controls">
+              <button
+                type="button"
+                className="stake-pill__btn"
+                onClick={() => adjustStake(-1)}
+              >
+                -
+              </button>
+              <div className="stake-pill__divider" />
+              <button
+                type="button"
+                className="stake-pill__btn"
+                onClick={() => adjustStake(1)}
+              >
+                +
+              </button>
             </div>
           </div>
           {[5, 50, 100].map((preset) => (
@@ -421,42 +438,78 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
 
         {showProgressNotice ? (
           <div className={`trade-notice trade-notice--${state.status}`} role="status" aria-live="polite">
-            <p className="trade-notice__title">Processing trade</p>
-            <p className="trade-notice__detail">{statusLabel}</p>
-            {txExplorerUrl ? (
+            <div className="trade-notice__header">
+              <span className="trade-notice__title">
+                {state.status === "failed" ? "Trade Failed" : "Processing Trade"}
+              </span>
+              <span className="trade-notice__detail">{statusLabel}</span>
+            </div>
+
+            {txExplorerUrl && (
               <a
-                className="trade-notice__link"
+                className="trade-notice__tx-link"
                 href={txExplorerUrl}
                 target="_blank"
                 rel="noreferrer noopener"
               >
-                View latest tx on BaseScan
+                View on BaseScan ↗
               </a>
-            ) : null}
-            {isStuck ? (
-              <button type="button" className="trade-notice__dismiss" onClick={() => resetTradeState()}>
-                Unlock controls
+            )}
+
+            <div className="trade-notice__actions">
+              <button
+                className="trade-notice__link"
+                style={{ opacity: 0.2, cursor: 'not-allowed' }}
+                disabled
+              >
+                View on Profile
               </button>
-            ) : null}
+              <button
+                type="button"
+                className="trade-notice__dismiss"
+                onClick={() => resetTradeState()}
+              >
+                {state.status === "failed" ? "Close" : "Dismiss"}
+              </button>
+            </div>
           </div>
         ) : null}
 
         {isConnected && isAuthenticated && state.status === "confirmed" ? (
           <div className={`trade-notice trade-notice--${state.status}`} role="status" aria-live="polite">
-            <p className="trade-notice__title">Trade confirmed</p>
-            <p className="trade-notice__detail">
-              {latestTxHash ? `Tx: ${formatTxHash(latestTxHash)}` : "Confirmed onchain."}
-            </p>
-            {txExplorerUrl ? (
+            <div className="trade-notice__header">
+              <span className="trade-notice__title">Success!</span>
+              <span className="trade-notice__detail">Your trade was confirmed on Base.</span>
+            </div>
+
+            {txExplorerUrl && (
               <a
-                className="trade-notice__link"
+                className="trade-notice__tx-link"
                 href={txExplorerUrl}
                 target="_blank"
                 rel="noreferrer noopener"
+                style={{ marginTop: '-4px' }}
               >
-                View on BaseScan
+                View on BaseScan ↗
               </a>
-            ) : null}
+            )}
+
+            <div className="trade-notice__actions">
+              <Link
+                href={`/profile#market-${market.id}`}
+                className="trade-notice__link"
+                onClick={() => resetTradeState()}
+              >
+                View on Profile
+              </Link>
+              <button
+                type="button"
+                className="trade-notice__dismiss"
+                onClick={() => resetTradeState()}
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         ) : null}
 

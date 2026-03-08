@@ -10,7 +10,7 @@ type FeedState = {
   snapshot: MarketSnapshot | null;
 };
 
-const WINDOW_RADIUS = 2;
+const WINDOW_RADIUS = 3;
 
 function sortSnapshot(snapshot: MarketSnapshot): MarketSnapshot {
   return {
@@ -50,7 +50,10 @@ export function VerticalMarketFeed({ initialSnapshot = null, startAtMarketId = n
     }
 
     const updateHeight = () => {
-      const next = container.clientHeight;
+      // Prefer visualViewport.height (correct on iOS when browser chrome hides)
+      // Fall back to container.clientHeight as the shell constrains it anyway.
+      const vvh = window.visualViewport?.height;
+      const next = vvh && vvh > 0 ? Math.floor(vvh) : container.clientHeight;
       if (next > 0) {
         setViewportHeight(next);
       }
@@ -62,10 +65,14 @@ export function VerticalMarketFeed({ initialSnapshot = null, startAtMarketId = n
     resizeObserver.observe(container);
 
     window.addEventListener("resize", updateHeight);
+    window.visualViewport?.addEventListener("resize", updateHeight);
+    window.visualViewport?.addEventListener("scroll", updateHeight);
 
     return () => {
       resizeObserver.disconnect();
       window.removeEventListener("resize", updateHeight);
+      window.visualViewport?.removeEventListener("resize", updateHeight);
+      window.visualViewport?.removeEventListener("scroll", updateHeight);
     };
   }, []);
 

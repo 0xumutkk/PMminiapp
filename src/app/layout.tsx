@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import "./globals.css";
 import { AppProviders } from "@/components/providers";
@@ -34,7 +34,7 @@ function resolveMetadataBase(raw: string | undefined) {
 }
 
 const metadataBase = resolveMetadataBase(process.env.NEXT_PUBLIC_MINI_APP_URL);
-const appName = process.env.NEXT_PUBLIC_APP_NAME ?? "Pulse Markets";
+const appName = process.env.NEXT_PUBLIC_APP_NAME ?? "Swipen";
 const appDescription =
   process.env.NEXT_PUBLIC_APP_DESCRIPTION ?? "Base Mini App for live prediction markets on Base";
 const ogTitle = process.env.NEXT_PUBLIC_OG_TITLE ?? appName;
@@ -71,6 +71,15 @@ const fcFrameEmbed = {
       type: "launch_frame"
     }
   }
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+  interactiveWidget: "resizes-content"
 };
 
 export const metadata: Metadata = {

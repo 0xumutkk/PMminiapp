@@ -256,7 +256,7 @@ export async function GET(request: Request) {
 
   const frame: MiniAppFrameManifest = {
     version: "1",
-    name: (process.env.NEXT_PUBLIC_APP_NAME ?? "Pulse Markets").slice(0, 30),
+    name: (process.env.NEXT_PUBLIC_APP_NAME ?? "Swipen").slice(0, 30),
     homeUrl: baseUrl,
     iconUrl,
     splashImageUrl,

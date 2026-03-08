@@ -34,7 +34,7 @@ function resolveOrigin(request: Request): string {
 export async function GET(request: Request) {
   try {
     const origin = resolveOrigin(request);
-    const appName = escapeHtml(process.env.NEXT_PUBLIC_APP_NAME ?? "Pulse Markets");
+    const appName = escapeHtml(process.env.NEXT_PUBLIC_APP_NAME ?? "Swipen");
     const appDescription = escapeHtml(
       process.env.NEXT_PUBLIC_APP_DESCRIPTION ?? "Base Mini App for live prediction markets on Base"
     );

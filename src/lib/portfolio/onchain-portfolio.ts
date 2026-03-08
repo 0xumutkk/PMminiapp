@@ -49,6 +49,18 @@ export type AmmMarketRef = {
     positionIds?: [string, string];
     yesPrice: number;
     noPrice: number;
+    fromHistory?: boolean;
+    endsAt?: string;
+};
+
+export type PositionCostBasisEntry = {
+    costUsdc: string;
+    /**
+     * Total shares acquired for the recorded cost basis.
+     * When current balance is lower (partial sell), we scale the
+     * remaining cost basis proportionally.
+     */
+    tokenAmount?: string;
 };
 
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
@@ -230,9 +242,53 @@ function formatUsdc(value: number): string {
     return value.toFixed(6).replace(/\.?0+$/, "") || "0";
 }
 
+function resolveCostBasisEntry(
+    costBasisMap: Record<string, PositionCostBasisEntry>,
+    market: AmmMarketRef,
+    side: "yes" | "no"
+): PositionCostBasisEntry | null {
+    const contractAddress = market.contractAddress.toLowerCase();
+    const marketId = market.id.toLowerCase();
+    const marketSlug = market.slug.toLowerCase();
+
+    return (
+        costBasisMap[`${contractAddress}:${side}`]
+        ?? costBasisMap[`${marketId}:${side}`]
+        ?? costBasisMap[`${marketSlug}:${side}`]
+        ?? null
+    );
+}
+
+function computeRemainingCostUsdc(
+    entry: PositionCostBasisEntry | null,
+    currentShares: number
+): string | null {
+    if (!entry) {
+        return null;
+    }
+
+    const totalCost = Number(entry.costUsdc);
+    if (!Number.isFinite(totalCost)) {
+        return null;
+    }
+
+    const totalShares = entry.tokenAmount ? Number(entry.tokenAmount) : Number.NaN;
+    if (Number.isFinite(totalShares) && totalShares > 0) {
+        if (!(currentShares > 0)) {
+            return "0";
+        }
+
+        const ratio = Math.min(currentShares / totalShares, 1);
+        return formatUsdc(totalCost * ratio);
+    }
+
+    return formatUsdc(totalCost);
+}
+
 export async function fetchOnchainAmmPositions(
     walletAddress: `0x${string}`,
-    markets: AmmMarketRef[]
+    markets: AmmMarketRef[],
+    costBasisMap: Record<string, PositionCostBasisEntry> = {}
 ): Promise<PortfolioPositionsSnapshot> {
     const validMarkets = markets.filter((m) => isAddress(m.contractAddress));
 
@@ -335,16 +391,27 @@ export async function fetchOnchainAmmPositions(
             if (result.status !== "success") continue;
 
             const balance = BigInt(String(result.result));
-            if (balance <= 0n) continue;
-
             const shares = Number(balance) / SHARES_SCALE;
+
+            const costBasisEntry = resolveCostBasisEntry(costBasisMap, market, side);
+            const actualCost = computeRemainingCostUsdc(costBasisEntry, shares);
 
             if (isResolved) {
                 // Settled market: value = tokens × (payout numerator / denominator)
                 const numerator = outcomeIndex === 0 ? yesNumerator : noNumerator;
                 const payoutRatio = Number(numerator) / Number(payoutDenom);
-                const redeemableUsdc = formatUsdc(shares * payoutRatio);
+                const redeemableUsdcNum = shares * payoutRatio;
+                const redeemableUsdc = formatUsdc(redeemableUsdcNum);
                 const isWinner = numerator > 0n;
+
+                // We include settled positions even with 0 balance if they were discovered via history
+                if (balance <= 0n && !isWinner && !market.fromHistory) continue;
+
+                // Calculate PNL based on real cost or default to 0
+                const costNum = actualCost ? Number(actualCost) : 0;
+                const pnlNum = redeemableUsdcNum - costNum;
+                // Avoid displaying extremely large negative PNLs if cost basis was completely misaligned
+                const pnlUsdc = actualCost ? formatUsdc(pnlNum) : "0";
 
                 positions.push({
                     id: `${market.id}:${side}`,
@@ -353,32 +420,45 @@ export async function fetchOnchainAmmPositions(
                     marketTitle: market.title,
                     side,
                     status: "settled",
-                    costUsdc: formatUsdc(shares), // original 1:1 cost approximation
+                    costUsdc: actualCost || "0", // Use true cost or 0
                     marketValueUsdc: redeemableUsdc,
                     unrealizedPnlUsdc: "0",
-                    realizedPnlUsdc: "0",
-                    claimable: isWinner,
+                    realizedPnlUsdc: pnlUsdc,    // Show accurate Realized PNL for closed positions
+                    claimable: isWinner && balance > 0n,
                     tokenBalance: formatUsdc(shares),
-                    currentPrice: payoutRatio
+                    currentPrice: payoutRatio,
+                    endsAt: market.endsAt
                 });
             } else {
-                // Active market
-                const marketValueUsdc = formatUsdc(shares * price);
+                // Active market: ONLY show if they have balance OR if discovered via history.
+                if (balance <= 0n && !market.fromHistory) continue;
+
+                const isSold = balance <= 0n;
+                const valueNum = isSold ? 0 : (shares * price);
+
+                // Calculate unrealized PNL
+                const costNum = actualCost ? Number(actualCost) : (isSold ? 0 : (shares * price));
+                const pnlNum = isSold ? 0 : (valueNum - costNum);
+                const pnlUsdc = actualCost ? formatUsdc(pnlNum) : "0";
+
                 positions.push({
                     id: `${market.id}:${side}`,
                     marketId: market.id,
                     marketSlug: market.slug,
                     marketTitle: market.title,
                     side,
-                    status: "active",
-                    costUsdc: marketValueUsdc,
-                    marketValueUsdc,
-                    unrealizedPnlUsdc: "0",
+                    status: isSold ? "settled" : "active",
+                    costUsdc: actualCost || (isSold ? "0" : formatUsdc(costNum)),
+                    marketValueUsdc: formatUsdc(valueNum),
+                    unrealizedPnlUsdc: pnlUsdc,
                     realizedPnlUsdc: "0",
                     claimable: false,
                     tokenBalance: formatUsdc(shares),
-                    currentPrice: price
-                });
+                    currentPrice: price,
+                    endsAt: market.endsAt,
+                    // Special internal property to indicate this was a sale
+                    isSold: isSold ? true : undefined
+                } as any);
             }
         }
     }

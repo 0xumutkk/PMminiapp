@@ -16,6 +16,8 @@ export type Market = {
   /** Minimum order size in shares (raw, not scaled). Multiply by yesPrice or noPrice to get USDC cost. */
   minTradeShares?: number;
   volume?: number;
+  /** Liquidity pool size in USDC */
+  liquidity?: number;
   endsAt?: string;
   status: MarketStatus;
   tradeVenue?: MarketTradeVenue;

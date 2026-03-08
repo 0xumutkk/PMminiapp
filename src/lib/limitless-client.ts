@@ -49,6 +49,8 @@ type LimitlessActiveMarketRow = {
   expired?: unknown;
   volumeFormatted?: unknown;
   volume?: unknown;
+  liquidityFormatted?: unknown;
+  liquidity?: unknown;
   expirationTimestamp?: unknown;
   expirationDate?: unknown;
   venue?: unknown;
@@ -70,10 +72,15 @@ type LimitlessActiveMarketsResponse = {
 };
 
 function clampProbability(value: number): number {
+  // If the value is strictly > 1, it's almost certainly a percentage (0-100).
+  // If it's exactly 1.0, and the other price in the pair is > 1 or very small,
+  // we need to be careful. But generally, 1.0 in a 0-100 context would be 1%.
+  // However, most APIs use 1.0 for 100%. We'll assume > 1 is percent.
   if (value > 1) {
     return Math.max(0, Math.min(1, value / 100));
   }
 
+  // If it's exactly 0 or 1, or between 0-1, keep as is.
   return Math.max(0, Math.min(1, value));
 }
 
@@ -112,19 +119,32 @@ function normalizeStatus(rawStatus: unknown, expired: unknown): Market["status"]
 }
 
 function parsePrices(raw: unknown) {
-  if (!Array.isArray(raw) || raw.length < 2) {
+  if (!Array.isArray(raw) || raw.length === 0) {
     return null;
   }
 
-  const yes = toNumber(raw[0]);
-  const no = toNumber(raw[1]);
-  if (yes === undefined || no === undefined) {
+  const rawYes = toNumber(raw[0]);
+  if (rawYes === undefined) {
     return null;
+  }
+
+  const yes = clampProbability(rawYes);
+
+  // For binary markets, we expect two prices.
+  // If we only have one, or if they don't sum to roughly 1 (100%),
+  // we derive the second one to ensure a valid UX.
+  const rawNo = raw.length >= 2 ? toNumber(raw[1]) : undefined;
+  let no = rawNo !== undefined ? clampProbability(rawNo) : (1 - yes);
+
+  // Strict check: prices must sum to 100%. 
+  // If they don't (e.g. 50% vs 100% from your screenshot), the second value is broken.
+  if (Math.abs(yes + no - 1) > 0.05) {
+    no = Math.max(0, 1 - yes);
   }
 
   return {
-    yesPrice: clampProbability(yes),
-    noPrice: clampProbability(no)
+    yesPrice: yes,
+    noPrice: no
   };
 }
 
@@ -160,6 +180,26 @@ function parseVolume(row: LimitlessActiveMarketRow) {
     : undefined;
   const decimals = toNumber(collateral?.decimals) ?? 6;
   const scaled = rawVolume / 10 ** decimals;
+
+  return Number.isFinite(scaled) ? scaled : undefined;
+}
+
+function parseLiquidity(row: LimitlessActiveMarketRow) {
+  const formatted = toNumber(row.liquidityFormatted);
+  if (formatted !== undefined) {
+    return formatted;
+  }
+
+  const rawLiquidity = toNumber(row.liquidity);
+  if (rawLiquidity === undefined) {
+    return undefined;
+  }
+
+  const collateral = typeof row.collateralToken === "object" && row.collateralToken !== null
+    ? (row.collateralToken as LimitlessCollateralToken)
+    : undefined;
+  const decimals = toNumber(collateral?.decimals) ?? 6;
+  const scaled = rawLiquidity / 10 ** decimals;
 
   return Number.isFinite(scaled) ? scaled : undefined;
 }
@@ -249,6 +289,7 @@ function normalizeMarket(row: LimitlessActiveMarketRow): Market | null {
     noPrice: prices.noPrice,
     minTradeShares: parseMinTradeShares(row),
     volume: parseVolume(row),
+    liquidity: parseLiquidity(row),
     endsAt: parseEndsAt(row),
     status: normalizeStatus(row.status, row.expired),
     tradeVenue: {

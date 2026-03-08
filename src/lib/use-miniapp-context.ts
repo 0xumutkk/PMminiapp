@@ -51,15 +51,18 @@ function mapContext(rawContext: RawMiniAppContext | null): MiniAppContext | null
 export function useMiniAppContext() {
   const [context, setContext] = useState<MiniAppContext | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [likelyMiniAppHost, setLikelyMiniAppHost] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+
+    setLikelyMiniAppHost(isLikelyMiniAppHost());
 
     const fallbackTimer = setTimeout(() => {
       if (!cancelled) {
         setLoaded(true);
       }
-    }, 1_200);
+    }, 800);
 
     async function loadContext() {
       try {
@@ -92,6 +95,6 @@ export function useMiniAppContext() {
     context,
     loaded,
     inMiniAppHost: Boolean(context),
-    isLikelyMiniAppHost: isLikelyMiniAppHost()
+    isLikelyMiniAppHost: likelyMiniAppHost
   };
 }

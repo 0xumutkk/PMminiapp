@@ -5,6 +5,18 @@ import { base } from "wagmi/chains";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import { useMiniAppContext } from "@/lib/use-miniapp-context";
 
+function resolvePreferredConnector(
+  connectors: ReturnType<typeof useConnect>["connectors"],
+  preferFarcaster: boolean
+) {
+  const farcaster = connectors.find((c) => c.id === "farcaster" || c.id === "farcaster-miniapp");
+  const injected = connectors.find((c) => c.id === "injected");
+
+  return preferFarcaster
+    ? (farcaster ?? injected ?? connectors[0])
+    : (injected ?? farcaster ?? connectors[0]);
+}
+
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
@@ -15,22 +27,24 @@ export function WalletStatus() {
   const chainId = useChainId();
   const { connect, connectors, isPending } = useConnect();
   const { isAuthenticated, status: authStatus, signIn, signOut } = useMiniAppAuth();
-  const { inMiniAppHost } = useMiniAppContext();
+  const { inMiniAppHost, isLikelyMiniAppHost, loaded: miniAppContextLoaded } = useMiniAppContext();
+  const preferFarcaster = miniAppContextLoaded ? inMiniAppHost : isLikelyMiniAppHost;
+  const defaultConnector = resolvePreferredConnector(connectors, preferFarcaster);
+  const isMiniAppBooting = isLikelyMiniAppHost && !miniAppContextLoaded;
 
   if (isPending) {
     return <p className="wallet-status">Connecting wallet...</p>;
   }
 
   if (!isConnected || !address) {
-    const defaultConnector = connectors.find((c) => (inMiniAppHost ? c.id === "farcaster" : c.id === "injected")) ?? connectors[0];
-
     return (
       <button
         className="wallet-connect-btn"
         onClick={() => connect({ connector: defaultConnector })}
+        disabled={!defaultConnector || isMiniAppBooting}
         type="button"
       >
-        Connect Wallet
+        {isMiniAppBooting ? "Preparing..." : "Connect Wallet"}
       </button>
     );
   }

@@ -31,7 +31,8 @@ async function fetchPortfolioPositions(
 export function usePortfolioPositions() {
   const { address } = useAccount();
   const { user, isAuthenticated, getAuthHeaders } = useMiniAppAuth();
-  const account = user?.address ?? address ?? null;
+  // Portfolio positions belong to the connected wallet, not the auth identity.
+  const account = address ?? user?.address ?? null;
   const enabled = Boolean(account && isAuthenticated && isAddress(account));
 
   const query = useQuery({

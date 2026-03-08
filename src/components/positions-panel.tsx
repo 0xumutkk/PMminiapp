@@ -55,6 +55,7 @@ interface PositionsPanelProps {
 export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
   const { executeIntent, isBusy, isConnected, state, statusLabel } = useTradeExecutor();
   const { account, isAuthenticated, snapshot, loading, error: queryError, refetch } = usePortfolioPositions();
+  const router = useRouter();
   const [interactionError, setInteractionError] = useState<string | null>(null);
   const [activeActionId, setActiveActionId] = useState<string | null>(null);
   const error = interactionError ?? queryError;
@@ -69,6 +70,29 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
   const activePositions = useMemo(() => snapshot?.active ?? [], [snapshot?.active]);
   const closedPositions = useMemo(() => snapshot?.settled.filter((item) => !item.claimable) ?? [], [snapshot?.settled]);
   const claimableSettledPositions = useMemo(() => snapshot?.settled.filter((item) => item.claimable) ?? [], [snapshot?.settled]);
+
+  useEffect(() => {
+    if (!loading && activePositions.length > 0 && typeof window !== 'undefined') {
+      const hash = window.location.hash;
+      if (hash && hash.startsWith('#market-')) {
+        // Wait a tick for DOM to be stable
+        const timer = setTimeout(() => {
+          const el = document.getElementById(hash.slice(1));
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Add a temporary highlight effect
+            el.style.transition = 'background-color 0.5s ease';
+            const originalBg = el.style.backgroundColor;
+            el.style.backgroundColor = 'rgba(11, 213, 45, 0.1)';
+            setTimeout(() => {
+              el.style.backgroundColor = originalBg;
+            }, 2000);
+          }
+        }, 300);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [loading, activePositions, filter]);
 
   const onSell = useCallback(async (position: ActivePosition) => {
     if (!isConnected || !account) return;
@@ -119,7 +143,13 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
             const isRedPnL = Number(position.unrealizedPnlUsdc) < 0;
 
             return (
-              <div key={position.id} className="positionDetailCard">
+              <div
+                key={position.id}
+                id={`market-${position.marketId}`}
+                className="positionDetailCard"
+                style={{ cursor: 'pointer' }}
+                onClick={() => router.push(`/feed?startAt=${position.marketSlug || position.marketId}`)}
+              >
                 <div className="posContent">
                   <header className="posHeader">
                     <div className="marketAvatar">
@@ -159,7 +189,10 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
                   <button
                     type="button"
                     className="cashOutBtn"
-                    onClick={() => void onSell(position)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onSell(position);
+                    }}
                     disabled={!isConnected || isBusy || activeActionId === position.id}
                   >
                     {activeActionId === position.id ? "Selling..." : "Cash Out"}
@@ -175,49 +208,93 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     );
   }
 
-  // ── CLOSED (kaybedilen – claimable olmayan) ─────────────────────────────
+  // ── CLOSED (kaybedilen, zaten çekilmiş veya satılmış) ─────────────────────────────
   if (filter === "closed") {
     return (
       <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
         {closedPositions.length > 0 ? (
-          closedPositions.map((position) => (
-            <div key={position.id} className="positionDetailCard" style={{ borderColor: 'rgba(255, 59, 107, 0.2)' }}>
-              <div className="posContent">
-                <header className="posHeader">
-                  <div className="marketAvatar" style={{ background: 'rgba(255, 59, 107, 0.1)', borderColor: 'rgba(255, 59, 107, 0.3)' }}>
-                    {position.side === 'yes' ? '👍' : '👎'}
-                  </div>
-                  <div className="marketTitleBlock">
-                    <span className="marketName">{position.marketTitle}</span>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
-                      <span style={{ fontSize: '11px', fontWeight: '700', padding: '3px 8px', borderRadius: '999px', background: 'rgba(255, 59, 107, 0.15)', color: '#ff3b6b', border: '1px solid rgba(255, 59, 107, 0.3)' }}>
-                        LOST ✗
-                      </span>
-                      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>{position.side.toUpperCase()}</span>
+          closedPositions.map((position) => {
+            const isRedeemed = Number(position.currentPrice) > 0 && Number(position.tokenBalance) === 0 && position.status === "settled" && !(position as any).isSold;
+            const isSold = (position as any).isSold;
+            const isLost = !isRedeemed && !isSold && Number(position.currentPrice) === 0;
+
+            const badgeColor = isRedeemed ? '#0bd52d' : isSold ? '#fc0' : '#ff3b6b';
+            const badgeBg = isRedeemed ? 'rgba(11, 213, 45, 0.15)' : isSold ? 'rgba(255, 204, 0, 0.15)' : 'rgba(255, 59, 107, 0.15)';
+            const badgeLabel = isRedeemed ? 'RECLAIMED ✓' : isSold ? 'CASHED OUT ⟲' : 'LOST ✗';
+
+            const realizedPnlNum = Number(position.realizedPnlUsdc) || 0;
+            const isRedRealizedPnl = realizedPnlNum <= 0;
+
+            return (
+              <div key={position.id} className="positionDetailCard" style={{ borderColor: isRedeemed ? 'rgba(11, 213, 45, 0.2)' : isSold ? 'rgba(255, 204, 0, 0.2)' : 'rgba(255, 59, 107, 0.2)' }}>
+                <div className="posContent">
+                  <header className="posHeader">
+                    <div className="marketAvatar" style={{
+                      background: isRedeemed ? 'rgba(11, 213, 45, 0.1)' : isSold ? 'rgba(255, 204, 0, 0.1)' : 'rgba(255, 59, 107, 0.1)',
+                      borderColor: badgeColor
+                    }}>
+                      {isRedeemed ? '🏆' : isSold ? '💰' : (position.side === 'yes' ? '👍' : '👎')}
                     </div>
-                  </div>
-                </header>
-                <div className="posStatsGrid">
-                  <div className="statRow">
-                    <div className="statBox">
-                      <span className="posLabel">Result</span>
-                      <span className="posVal valRed">Lost</span>
+                    <div className="marketTitleBlock">
+                      <span className="marketName">{position.marketTitle}</span>
+                      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                        {position.endsAt && (
+                          <span style={{
+                            fontSize: '10px',
+                            color: 'rgba(255,255,255,0.4)',
+                            fontWeight: '700',
+                            marginRight: '4px'
+                          }}>
+                            Ended {new Date(position.endsAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </span>
+                        )}
+                        <span style={{
+                          fontSize: '11px',
+                          fontWeight: '700',
+                          padding: '3px 8px',
+                          borderRadius: '999px',
+                          background: badgeBg,
+                          color: badgeColor,
+                          border: `1px solid ${badgeColor}4D`
+                        }}>
+                          {badgeLabel}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)', textAlign: 'right' }}>{position.side.toUpperCase()}</span>
                     </div>
-                    <div className="statBox">
-                      <span className="posLabel">Holdings</span>
-                      <span className="posVal valWhite" style={{ fontSize: '14px' }}>
-                        {Number(position.tokenBalance).toLocaleString()} Shares
-                      </span>
+                  </header>
+                  <div className="posStatsGrid">
+                    <div className="statRow">
+                      <div className="statBox">
+                        <span className="posLabel">Result</span>
+                        <span className="posVal" style={{ color: badgeColor }}>
+                          {isRedeemed ? 'Won' : isSold ? 'Sold' : 'Lost'}
+                        </span>
+                      </div>
+                      <div className="statBox">
+                        <span className="posLabel">PNL</span>
+                        <span className={`posVal ${isRedRealizedPnl ? (realizedPnlNum === 0 ? 'valWhite' : 'valRed') : 'valGreen'}`}>
+                          {realizedPnlNum > 0 ? '+' : ''}{formatUsd(position.realizedPnlUsdc)}
+                        </span>
+                      </div>
+                      <div className="statBox">
+                        <span className="posLabel">Holdings</span>
+                        <span className="posVal valWhite" style={{ fontSize: '14px' }}>
+                          {Number(position.tokenBalance).toLocaleString()} Shares
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
+                <div className="actionArea">
+                  <div className={isRedeemed ? "wonBtn" : isSold ? "soldBtn" : "lostBtn"}>
+                    <span>{isRedeemed ? "Winnings Collected" : isSold ? "Position Sold" : "Position Closed — Better Luck Next Time"}</span>
+                  </div>
+                </div>
               </div>
-              <div className="actionArea">
-                <div className="lostBtn"><span>Position Closed — Better Luck Next Time</span></div>
-              </div>
-            </div>
-          ))
+            );
+          })
         ) : (
           <p style={{ opacity: 0.6, fontSize: '13px', padding: '12px 4px' }}>No closed positions.</p>
         )}
@@ -240,9 +317,21 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
                 <div className="marketTitleBlock">
                   <span className="marketName">{position.marketTitle}</span>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
-                    <span style={{ fontSize: '11px', fontWeight: '700', padding: '3px 8px', borderRadius: '999px', background: 'rgba(11, 213, 45, 0.15)', color: '#0bd52d', border: '1px solid rgba(11, 213, 45, 0.3)' }}>
-                      WON ✓
-                    </span>
+                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                      {position.endsAt && (
+                        <span style={{
+                          fontSize: '10px',
+                          color: 'rgba(255,255,255,0.4)',
+                          fontWeight: '700',
+                          marginRight: '4px'
+                        }}>
+                          Ended {new Date(position.endsAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </span>
+                      )}
+                      <span style={{ fontSize: '11px', fontWeight: '700', padding: '3px 8px', borderRadius: '999px', background: 'rgba(11, 213, 45, 0.15)', color: '#0bd52d', border: '1px solid rgba(11, 213, 45, 0.3)' }}>
+                        WON ✓
+                      </span>
+                    </div>
                     <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>{position.side.toUpperCase()}</span>
                   </div>
                 </div>

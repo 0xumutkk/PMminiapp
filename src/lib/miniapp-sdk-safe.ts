@@ -101,26 +101,29 @@ export function isLikelyMiniAppHost() {
   }
 
   try {
-    if (Boolean(currentWindow.ReactNativeWebView)) {
+    // Only trust ReactNativeWebView if it has postMessage
+    if (Boolean(currentWindow.ReactNativeWebView) && typeof currentWindow.ReactNativeWebView.postMessage === 'function') {
       return true;
     }
 
     const referrerHost = getReferrerHost();
+    // Only trust referrer if it's a known host
     if (referrerHost && isKnownHost(referrerHost)) {
       return true;
     }
 
-    if (currentWindow.top === currentWindow.self) {
+    // If we're in an iframe, check if we're on a known domain
+    if (currentWindow.top !== currentWindow.self) {
+      if (referrerHost) {
+        return isKnownHost(referrerHost);
+      }
+      // If we're in an iframe but host is unknown, don't assume mini-app
       return false;
     }
 
-    if (!referrerHost) {
-      return true;
-    }
-
-    return isKnownHost(referrerHost);
+    return false;
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -195,7 +198,9 @@ export async function markMiniAppReady() {
   }
 
   try {
-    await sdk.actions.ready();
+    const readyPromise = sdk.actions.ready();
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000));
+    await Promise.race([readyPromise, timeoutPromise]);
     return true;
   } catch {
     return false;

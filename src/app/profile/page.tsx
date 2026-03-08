@@ -22,13 +22,67 @@ function formatUsd(raw: string | number) {
 
 function ProfileContent() {
   const [subView, setSubView] = React.useState<"active" | "closed" | "redeem">("active");
-  const { snapshot, loading: positionsLoading } = usePortfolioPositions();
+  const { snapshot, loading: positionsLoading, refetch: refetchPositions } = usePortfolioPositions();
   const { address } = useAccount();
 
-  const { data: usdcBalance, isLoading: balanceLoading } = useBalance({
+  const { data: usdcBalance, isLoading: balanceLoading, refetch: refetchBalance } = useBalance({
     address,
     token: USDC_ADDRESS,
   });
+
+  const [isPulling, setIsPulling] = React.useState(false);
+  const [isRefreshing, setIsRefreshing] = React.useState(false);
+  const [pullDistance, setPullDistance] = React.useState(0);
+  const startY = React.useRef(0);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    // Use container's scrollTop if possible, fallback to window.scrollY
+    const scrollTop = containerRef.current?.closest('.app-shell__content')?.scrollTop ?? window.scrollY;
+    if (scrollTop <= 1) {
+      startY.current = e.touches[0].clientY;
+      setIsPulling(true);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isPulling || isRefreshing) return;
+    const y = e.touches[0].clientY;
+    const distance = y - startY.current;
+
+    // Only pull if moving downwards
+    if (distance > 0) {
+      // Damping effect
+      setPullDistance(Math.min(distance * 0.4, 100));
+    } else {
+      setPullDistance(0);
+    }
+  };
+
+  const handleTouchEnd = async () => {
+    if (!isPulling) return;
+    setIsPulling(false);
+
+    if (pullDistance > 60) {
+      setIsRefreshing(true);
+      setPullDistance(50); // Snap to loading height
+      try {
+        await Promise.all([
+          refetchPositions(),
+          refetchBalance(),
+          // Add a minimum delay so the loading animation feels intentional
+          new Promise((resolve) => setTimeout(resolve, 800))
+        ]);
+      } catch (err) {
+        console.error("Refresh failed", err);
+      } finally {
+        setIsRefreshing(false);
+        setPullDistance(0);
+      }
+    } else {
+      setPullDistance(0);
+    }
+  };
 
   const positionsValue = Number(snapshot?.totals.activeMarketValueUsdc ?? 0);
   const usdcValue = Number(usdcBalance?.formatted ?? 0);
@@ -42,7 +96,49 @@ function ProfileContent() {
   const activeCount = snapshot?.active.length ?? 0;
 
   return (
-    <div className="profileHub" style={{ paddingTop: '80px' }}>
+    <div
+      ref={containerRef}
+      className="profileHub"
+      style={{
+        paddingTop: '80px',
+        transform: `translateY(${pullDistance}px)`,
+        transition: isPulling ? 'none' : 'transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)',
+        minHeight: '100%',
+        willChange: 'transform'
+      }}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
+      {/* Pull to refresh indicator */}
+      {(pullDistance > 0 || isRefreshing) && (
+        <div style={{
+          position: 'absolute',
+          top: '-40px',
+          left: '0',
+          right: '0',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          height: '40px',
+          opacity: Math.min(pullDistance / 50, 1),
+          transform: `scale(${Math.min(pullDistance / 50, 1)})`,
+          transition: isPulling ? 'none' : 'all 0.3s ease',
+        }}>
+          {isRefreshing ? (
+            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+              <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#fff', animation: 'blink 1.4s infinite cubic-bezier(0.2, 0.8, 0.2, 1) both' }}></div>
+              <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#fff', animation: 'blink 1.4s infinite cubic-bezier(0.2, 0.8, 0.2, 1) both', animationDelay: '0.2s' }}></div>
+              <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#fff', animation: 'blink 1.4s infinite cubic-bezier(0.2, 0.8, 0.2, 1) both', animationDelay: '0.4s' }}></div>
+            </div>
+          ) : (
+            <span style={{ fontSize: '18px', color: 'rgba(255,255,255,0.7)', fontWeight: 'bold' }}>
+              {pullDistance > 60 ? '↓ Release to Refresh' : '↓ Pull to Refresh'}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Net Worth Card (Figma 127:3710) */}
       <section className="netWorthCard">
         <div className="netWorthTop">

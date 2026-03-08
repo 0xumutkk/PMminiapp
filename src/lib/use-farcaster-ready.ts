@@ -36,16 +36,17 @@ export function useMiniAppReady() {
       inFlightRef.current = true;
       try {
         const ready = await markMiniAppReady();
-        if (!ready) {
+        if (ready) {
+          readyRef.current = true;
           return;
         }
-        readyRef.current = true;
-        return;
+      } catch (err) {
+        console.warn("[MiniAppReady] attempt failed:", err);
       } finally {
         inFlightRef.current = false;
       }
 
-      if (attempt >= maxAttempts) {
+      if (attempt >= maxAttempts || cancelled) {
         return;
       }
 

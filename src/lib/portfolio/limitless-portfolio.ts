@@ -18,6 +18,8 @@ export type TrackedPosition = {
   tokenBalance: string;
   /** Current market price for this side (0–1). Used by UI to skip market lookup for historical positions. */
   currentPrice?: number;
+  /** The date when the market ends/ended. */
+  endsAt?: string;
 };
 
 export type PortfolioPositionsSnapshot = {
@@ -50,6 +52,8 @@ type ClobPosition = {
     title?: unknown;
     status?: unknown;
     closed?: unknown;
+    ends_at?: unknown;
+    endsAt?: unknown;
     winning_index?: unknown;
     payout_numerators?: unknown;
     position_ids?: unknown;
@@ -71,6 +75,8 @@ type AmmPosition = {
     title?: unknown;
     status?: unknown;
     closed?: unknown;
+    ends_at?: unknown;
+    endsAt?: unknown;
     winning_index?: unknown;
     payout_numerators?: unknown;
     collateral?: {
@@ -101,7 +107,7 @@ function normalizeBaseUrl(rawBaseUrl: string | undefined) {
   }
 }
 
-async function fetchWithTimeout(url: string) {
+async function fetchWithTimeout(url: string, authHeaders?: Record<string, string>) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -115,7 +121,8 @@ async function fetchWithTimeout(url: string) {
         Origin: "https://limitless.exchange",
         Referer: "https://limitless.exchange/",
         "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        ...authHeaders
       },
       cache: "no-store"
     });
@@ -126,6 +133,21 @@ async function fetchWithTimeout(url: string) {
 
 function toStringValue(value: unknown) {
   return typeof value === "string" ? value : undefined;
+}
+
+function toIsoDateString(value: unknown) {
+  if (typeof value === "string") {
+    if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+      return value;
+    }
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? undefined : d.toISOString();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const d = new Date(value < 10 ** 11 ? value * 1000 : value);
+    return isNaN(d.getTime()) ? undefined : d.toISOString();
+  }
+  return undefined;
 }
 
 function toNumberValue(value: unknown) {
@@ -398,7 +420,16 @@ function toTrackedPosition(
     unrealizedPnlUsdc: normalizeTokenAmount(sideData.unrealizedPnl, decimals),
     realizedPnlUsdc: normalizeTokenAmount(sideData.realisedPnl, decimals),
     claimable,
-    tokenBalance: normalizeTokenAmount(sideBalance, decimals)
+    tokenBalance: normalizeTokenAmount(sideBalance, decimals),
+    endsAt: toIsoDateString(
+      raw.market?.ends_at ??
+      (raw.market as any)?.endsAt ??
+      (raw.market as any)?.expirationTimestamp ??
+      (raw.market as any)?.expirationDate ??
+      (raw.market as any)?.resolved_at ??
+      (raw.market as any)?.closed_at ??
+      (raw.market as any)?.close_date
+    )
   };
 }
 
@@ -445,7 +476,16 @@ function toTrackedAmmPosition(raw: AmmPosition, decimals: number): TrackedPositi
     unrealizedPnlUsdc: "0",
     realizedPnlUsdc: "0",
     claimable: false,
-    tokenBalance: sharesRaw
+    tokenBalance: sharesRaw,
+    endsAt: toIsoDateString(
+      raw.market?.ends_at ??
+      (raw.market as any)?.endsAt ??
+      (raw.market as any)?.expirationTimestamp ??
+      (raw.market as any)?.expirationDate ??
+      (raw.market as any)?.resolved_at ??
+      (raw.market as any)?.closed_at ??
+      (raw.market as any)?.close_date
+    )
   };
 }
 
@@ -501,14 +541,17 @@ function normalizePortfolioPositions(
   };
 }
 
-export async function fetchPublicPortfolioPositions(account: string): Promise<PortfolioPositionsSnapshot> {
+export async function fetchPublicPortfolioPositions(
+  account: string,
+  authHeaders?: Record<string, string>
+): Promise<PortfolioPositionsSnapshot> {
   if (!isAddress(account)) {
     throw new Error("account must be a valid EVM address");
   }
 
   const normalizedAccount = account as `0x${string}`;
   const baseUrl = normalizeBaseUrl(process.env.LIMITLESS_API_BASE_URL);
-  const response = await fetchWithTimeout(`${baseUrl}/portfolio/${normalizedAccount}/positions`);
+  const response = await fetchWithTimeout(`${baseUrl}/portfolio/${normalizedAccount}/positions`, authHeaders);
 
   if (response.status === 404) {
     return {

@@ -12,53 +12,53 @@ const nextConfig = {
     }
   },
   async headers() {
-    const corsHeaders = [
-      { key: "Access-Control-Allow-Origin", value: "*" },
-      { key: "Access-Control-Allow-Methods", value: "GET,HEAD,OPTIONS" },
-      { key: "Access-Control-Allow-Headers", value: "*" }
-    ];
-
-    // WalletConnect / Reown AppKit + Base + Limitless + Farcaster auth
-    const cspConnectSrc = [
+    const frameAncestors = [
       "'self'",
-      "https:",
-      "wss:",
-      "https://explorer-api.walletconnect.com",
-      "https://rpc.walletconnect.com",
-      "https://rpc.walletconnect.org",
-      "https://relay.walletconnect.com",
-      "https://relay.walletconnect.org",
-      "wss://relay.walletconnect.com",
-      "wss://relay.walletconnect.org",
-      "https://mainnet.base.org",
-      "https://*.base.org",
-      "https://api.limitless.exchange",
-      "https://auth.farcaster.xyz"
+      "https://warpcast.com",
+      "https://*.warpcast.com",
+      "https://farcaster.xyz",
+      "https://*.farcaster.xyz",
+      "https://mini.swipen.xyz"
     ].join(" ");
 
-    const cspHeaders = [
-      {
-        key: "Content-Security-Policy",
-        value: `connect-src ${cspConnectSrc}`
-      }
-    ];
+    const cspConnectSrc = [
+      "'self'",
+      "https://explorer-api.walletconnect.com",
+      "https://rpc.walletconnect.com",
+      "https://relay.walletconnect.com",
+      "wss://relay.walletconnect.com",
+      "https://api.limitless.exchange",
+      "https://auth.farcaster.xyz",
+      "https://api.upbit.com",
+      "https://api.coingecko.com",
+      "https://*.base.org",
+      "https://base-rpc.publicnode.com",
+      "https://mainnet.base.org"
+    ].join(" ");
+
+    const cspHeader = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://auth.farcaster.xyz",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "img-src 'self' data: https://*.googleusercontent.com https://*.limitless.exchange https://imagedelivery.net blob:",
+      "font-src 'self' https://fonts.gstatic.com",
+      `connect-src ${cspConnectSrc}`,
+      `frame-ancestors ${frameAncestors}`,
+      "frame-src 'self' https://verify.walletconnect.com https://verify.walletconnect.org",
+      "base-uri 'self'",
+      "form-action 'self'"
+    ].join("; ");
 
     return [
       {
-        source: "/_next/static/:path*",
-        headers: corsHeaders
-      },
-      {
-        source: "/_next/webpack-hmr",
-        headers: corsHeaders
-      },
-      {
-        source: "/__nextjs_original-stack-frames",
-        headers: corsHeaders
-      },
-      {
         source: "/:path*",
-        headers: cspHeaders
+        headers: [
+          { key: "Content-Security-Policy", value: cspHeader },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Access-Control-Allow-Origin", value: "*" },
+          { key: "Access-Control-Allow-Methods", value: "GET,OPTIONS,PATCH,DELETE,POST,PUT" },
+          { key: "Access-Control-Allow-Headers", value: "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version" }
+        ]
       }
     ];
   }

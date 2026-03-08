@@ -1,5 +1,23 @@
 import { NextResponse } from "next/server";
 
+const FETCH_TIMEOUT_MS = 4000; // 4 seconds per attempt
+
+async function fetchWithTimeout(url: string, options: any = {}) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal,
+        });
+        clearTimeout(id);
+        return response;
+    } catch (e) {
+        clearTimeout(id);
+        throw e;
+    }
+}
+
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const symbol = searchParams.get("symbol")?.toUpperCase();
@@ -9,12 +27,12 @@ export async function GET(request: Request) {
     }
 
     try {
-        // 1. Handle KRW specifically via Upbit API (most common source for KRW pairs)
+        // 1. Upbit Fallback for KRW pairs
         if (symbol.endsWith("KRW")) {
             const base = symbol.slice(0, -3);
             const upbitSymbol = `KRW-${base}`;
             try {
-                const upbitRes = await fetch(`https://api.upbit.com/v1/ticker?markets=${upbitSymbol}`, {
+                const upbitRes = await fetchWithTimeout(`https://api.upbit.com/v1/ticker?markets=${upbitSymbol}`, {
                     next: { revalidate: 10 }
                 });
                 if (upbitRes.ok) {
@@ -27,46 +45,36 @@ export async function GET(request: Request) {
                     }
                 }
             } catch (e) {
-                console.error("Upbit fetch failed:", e);
+                console.warn(`Upbit fetch failed for ${upbitSymbol}:`, e instanceof Error ? e.message : "Timeout");
             }
         }
 
-        // 2. Try multiple Binance API endpoints for redundancy
-        const endpoints = [
-            `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`,
-            `https://api1.binance.com/api/v3/ticker/price?symbol=${symbol}`,
-            `https://api3.binance.com/api/v3/ticker/price?symbol=${symbol}`,
-        ];
+        // 2. CoinGecko as the primary source for non-KRW or if Upbit fails
+        const geckoMap: Record<string, string> = {
+            "BTCKRW": "bitcoin",
+            "ETHKRW": "ethereum",
+            "SOLKRW": "solana",
+            "BTCUSDT": "bitcoin",
+            "ETHUSDT": "ethereum",
+            "SOLUSDT": "solana",
+            "USDCUSDT": "usd-coin",
+            "LINKUSDT": "chainlink",
+            "ARBUSDT": "arbitrum"
+        };
 
-        let response;
-        for (const url of endpoints) {
+        if (geckoMap[symbol]) {
             try {
-                response = await fetch(url, {
-                    next: { revalidate: 10 }, // Cache for 10 seconds
-                });
-                if (response.ok) break;
+                const coinId = geckoMap[symbol];
+                const geckoRes = await fetchWithTimeout(`https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=krw,usd`);
+                if (geckoRes.ok) {
+                    const data = await geckoRes.json();
+                    const price = symbol.endsWith("KRW") ? data[coinId].krw : data[coinId].usd;
+                    if (price) {
+                        return NextResponse.json({ symbol, price: String(price) });
+                    }
+                }
             } catch (e) {
-                continue;
-            }
-        }
-
-        if (response && response.ok) {
-            const data = await response.json();
-            return NextResponse.json(data);
-        }
-
-        // 3. Fallback: If specific pair (like BTC/EUR) fails, try USDT pair as a last resort
-        // but only if it's not already a USDT/USDC pair
-        if (!symbol.endsWith("USDT") && !symbol.endsWith("USDC")) {
-            const base = symbol.slice(0, 3); // Rough guess
-            const usdtTicker = `${base}USDT`;
-            const fallbackRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${usdtTicker}`, {
-                next: { revalidate: 10 }
-            });
-            if (fallbackRes.ok) {
-                const data = await fallbackRes.json();
-                // Return the USD price if we couldn't get the requested quote
-                return NextResponse.json(data);
+                console.warn("CoinGecko fetch failed:", e instanceof Error ? e.message : "Timeout");
             }
         }
 

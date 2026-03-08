@@ -35,7 +35,8 @@ const SUPPORTED_ROLES = new Set([
   "true",
   "false",
   "zero",
-  "one"
+  "one",
+  "min-tokens"
 ]);
 
 function parseFunctionSignature(signature: string): ParsedFunctionSignature {
@@ -231,6 +232,31 @@ function convertArg(role: string, argType: string, request: TradeIntentRequest, 
     throw new Error(`Unsupported numeric flag argument type: ${argType}`);
   }
 
+  // min-tokens: calculates minimum acceptable outcome tokens for on-chain slippage protection
+  // Formula: investmentAmount / expectedPrice * (1 - slippageTolerance)
+  if (role === "min-tokens") {
+    if (!argType.startsWith("uint")) {
+      throw new Error(`min-tokens role only supports uint types, got: ${argType}`);
+    }
+
+    const expectedPrice = request.expectedPrice;
+    const slippageBps = request.maxSlippageBps ?? 200; // default 2%
+
+    // If no expected price, fall back to 0 (no on-chain guard — backend still checks)
+    if (!expectedPrice || expectedPrice <= 0 || expectedPrice >= 1 || !amountUnits) {
+      return 0n;
+    }
+
+    // expectedShares = investmentAmount / expectedPrice
+    // minShares = expectedShares * (1 - slippage)
+    // All in 1e6 scale (USDC decimals)
+    const slippageMultiplier = 1 - (slippageBps / 10000);
+    const expectedShares = Number(amountUnits) / expectedPrice;
+    const minShares = Math.floor(expectedShares * slippageMultiplier);
+
+    return minShares > 0 ? BigInt(minShares) : 0n;
+  }
+
   if (role !== "market") {
     throw new Error(`Unsupported arg role: ${role}`);
   }
@@ -328,8 +354,8 @@ function resolveActionArgMap(action: TradeIntentAction, explicitArgMap?: string)
 
   if (action === "buy") {
     // Limitless AMM contract: buy(uint256 investmentAmount, uint256 outcomeIndex, uint256 minOutcomeTokensToBuy)
-    // outcomeIndex: 0 = YES, 1 = NO  |  minOutcomeTokensToBuy: 0 = no slippage guard (market order)
-    return process.env.LIMITLESS_TRADE_ARG_MAP ?? "amount,outcome-index,zero";
+    // outcomeIndex: 0 = YES, 1 = NO  |  min-tokens = on-chain slippage guard
+    return process.env.LIMITLESS_TRADE_ARG_MAP ?? "amount,outcome-index,min-tokens";
   }
 
   if (action === "sell") {

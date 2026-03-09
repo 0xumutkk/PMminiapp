@@ -1,4 +1,4 @@
-# Pulse Markets Base Mini App
+# Swipen Base Mini App
 
 This repository implements a Base Mini App with live Limitless markets and onchain trade intents on Base.
 

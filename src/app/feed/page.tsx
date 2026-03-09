@@ -20,7 +20,7 @@ export default async function FeedPage() {
   const initialSnapshot = await loadInitialSnapshot();
 
   return (
-    <AppShell title="Pulse Markets">
+    <AppShell title="Swipen">
       <Suspense fallback={<section className="feed-loading">Loading markets...</section>}>
         <FeedPageClient initialSnapshot={initialSnapshot} />
       </Suspense>

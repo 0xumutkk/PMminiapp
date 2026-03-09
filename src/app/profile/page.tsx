@@ -5,6 +5,7 @@ import { PositionsPanel } from "@/components/positions-panel";
 import { WalletStatusSlot } from "@/components/wallet-status-slot";
 import { ProfileGuard } from "@/components/profile-guard";
 import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
+import { filterVisibleActivePositions } from "@/lib/portfolio/visible-active-positions";
 import { useAccount, useBalance } from "wagmi";
 import React, { Suspense } from "react";
 
@@ -36,6 +37,26 @@ function ProfileContent() {
   const startY = React.useRef(0);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
+  const runRefresh = React.useCallback(async () => {
+    if (isRefreshing) {
+      return;
+    }
+
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        refetchPositions(),
+        refetchBalance(),
+        new Promise((resolve) => setTimeout(resolve, 800))
+      ]);
+    } catch (err) {
+      console.error("Refresh failed", err);
+    } finally {
+      setIsRefreshing(false);
+      setPullDistance(0);
+    }
+  }, [isRefreshing, refetchBalance, refetchPositions]);
+
   const handleTouchStart = (e: React.TouchEvent) => {
     // Use container's scrollTop if possible, fallback to window.scrollY
     const scrollTop = containerRef.current?.closest('.app-shell__content')?.scrollTop ?? window.scrollY;
@@ -64,21 +85,8 @@ function ProfileContent() {
     setIsPulling(false);
 
     if (pullDistance > 60) {
-      setIsRefreshing(true);
       setPullDistance(50); // Snap to loading height
-      try {
-        await Promise.all([
-          refetchPositions(),
-          refetchBalance(),
-          // Add a minimum delay so the loading animation feels intentional
-          new Promise((resolve) => setTimeout(resolve, 800))
-        ]);
-      } catch (err) {
-        console.error("Refresh failed", err);
-      } finally {
-        setIsRefreshing(false);
-        setPullDistance(0);
-      }
+      await runRefresh();
     } else {
       setPullDistance(0);
     }
@@ -93,7 +101,7 @@ function ProfileContent() {
 
   const claimableCount = snapshot?.settled.filter(s => s.claimable).length ?? 0;
   const closedCount = snapshot?.settled.filter(s => !s.claimable).length ?? 0;
-  const activeCount = snapshot?.active.length ?? 0;
+  const activeCount = filterVisibleActivePositions(snapshot?.active ?? []).length;
 
   return (
     <div
@@ -140,7 +148,30 @@ function ProfileContent() {
       )}
 
       {/* Net Worth Card (Figma 127:3710) */}
-      <section className="netWorthCard">
+      <section className="netWorthCard" style={{ position: 'relative' }}>
+        <button
+          type="button"
+          onClick={() => { void runRefresh(); }}
+          disabled={isRefreshing}
+          aria-label="Refresh profile balances"
+          style={{
+            position: 'absolute',
+            top: '14px',
+            right: '14px',
+            border: '1px solid rgba(255,255,255,0.14)',
+            background: 'rgba(255,255,255,0.06)',
+            color: 'rgba(255,255,255,0.92)',
+            borderRadius: '999px',
+            padding: '8px 12px',
+            fontSize: '12px',
+            fontWeight: '700',
+            lineHeight: 1,
+            cursor: isRefreshing ? 'default' : 'pointer',
+            opacity: isRefreshing ? 0.6 : 1
+          }}
+        >
+          {isRefreshing ? 'Refreshing' : 'Refresh'}
+        </button>
         <div className="netWorthTop">
           <span className="netWorthLabel">Net Worth</span>
           <h1 className="netWorthValue">
@@ -225,7 +256,7 @@ function ProfileContent() {
             style={{ flex: 'unset', padding: '10px 12px', gap: '4px' }}
             onClick={() => setSubView('closed')}
           >
-            <span className="statCardLabel">Closed Positions</span>
+            <span className="statCardLabel">History</span>
             <span className="statCardValue" style={{ fontSize: '15px' }}>{closedCount}</span>
           </div>
         </div>

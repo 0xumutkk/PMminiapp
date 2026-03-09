@@ -2,15 +2,22 @@
 
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { isAddress } from "viem";
+import { useCallback } from "react";
 import { useAccount } from "wagmi";
 
 async function fetchPortfolioPositions(
   account: string,
-  authHeaders: Record<string, string>
+  authHeaders: Record<string, string>,
+  fresh = false
 ): Promise<PortfolioPositionsSnapshot> {
-  const response = await fetch(`/api/portfolio/positions?account=${account}`, {
+  const params = new URLSearchParams({ account });
+  if (fresh) {
+    params.set("fresh", "1");
+  }
+
+  const response = await fetch(`/api/portfolio/positions?${params.toString()}`, {
     cache: "no-store",
     credentials: "include",
     headers: authHeaders
@@ -31,16 +38,36 @@ async function fetchPortfolioPositions(
 export function usePortfolioPositions() {
   const { address } = useAccount();
   const { user, isAuthenticated, getAuthHeaders } = useMiniAppAuth();
+  const queryClient = useQueryClient();
   // Portfolio positions belong to the connected wallet, not the auth identity.
   const account = address ?? user?.address ?? null;
   const enabled = Boolean(account && isAuthenticated && isAddress(account));
+  const queryKey = ["portfolio-positions", account] as const;
 
   const query = useQuery({
-    queryKey: ["portfolio-positions", account],
+    queryKey,
     queryFn: () => fetchPortfolioPositions(account as string, getAuthHeaders()),
     enabled,
-    refetchInterval: enabled ? 20_000 : false
+    refetchInterval: enabled ? 20_000 : false,
+    placeholderData: (previousData) => previousData,
+    staleTime: 15_000,
+    retry: 0
   });
+
+  const refetch = useCallback(async () => {
+    if (!enabled || !account) {
+      return null;
+    }
+
+    try {
+      const snapshot = await fetchPortfolioPositions(account, getAuthHeaders(), true);
+      queryClient.setQueryData(queryKey, snapshot);
+      return snapshot;
+    } catch (error) {
+      console.warn("[Portfolio Positions] Fresh refetch failed:", error);
+      return (queryClient.getQueryData(queryKey) as PortfolioPositionsSnapshot | undefined) ?? null;
+    }
+  }, [account, enabled, getAuthHeaders, queryClient, queryKey]);
 
   return {
     account,
@@ -49,6 +76,6 @@ export function usePortfolioPositions() {
     loading: query.isLoading || (query.isFetching && !query.data),
     isFetching: query.isFetching,
     error: query.error instanceof Error ? query.error.message : null,
-    refetch: query.refetch
+    refetch
   };
 }

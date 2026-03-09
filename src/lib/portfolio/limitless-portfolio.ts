@@ -18,8 +18,12 @@ export type TrackedPosition = {
   tokenBalance: string;
   /** Current market price for this side (0–1). Used by UI to skip market lookup for historical positions. */
   currentPrice?: number;
+  /** Whether worth/PNL fields come from verified pricing rather than a fallback estimate. */
+  hasVerifiedPricing?: boolean;
   /** The date when the market ends/ended. */
   endsAt?: string;
+  /** Internal UI hint for historical positions closed via sell rather than resolution/redeem. */
+  isSold?: boolean;
 };
 
 export type PortfolioPositionsSnapshot = {
@@ -54,14 +58,24 @@ type ClobPosition = {
     closed?: unknown;
     ends_at?: unknown;
     endsAt?: unknown;
+    expirationDate?: unknown;
+    deadline?: unknown;
     winning_index?: unknown;
+    winningOutcomeIndex?: unknown;
     payout_numerators?: unknown;
     position_ids?: unknown;
+    yesPositionId?: unknown;
+    noPositionId?: unknown;
     collateral?: {
       decimals?: unknown;
     };
   };
   tokensBalance?: unknown;
+  latestTrade?: {
+    latestYesPrice?: unknown;
+    latestNoPrice?: unknown;
+    outcomeTokenPrice?: unknown;
+  };
   positions?: {
     yes?: PositionData;
     no?: PositionData;
@@ -77,7 +91,10 @@ type AmmPosition = {
     closed?: unknown;
     ends_at?: unknown;
     endsAt?: unknown;
+    expirationDate?: unknown;
+    deadline?: unknown;
     winning_index?: unknown;
+    winningOutcomeIndex?: unknown;
     payout_numerators?: unknown;
     collateral?: {
       decimals?: unknown;
@@ -218,6 +235,30 @@ function normalizeTokenAmount(raw: unknown, decimals: number) {
   return `${sign}${whole.toString()}${fraction ? `.${fraction}` : ""}`;
 }
 
+function formatDecimalNumber(value: number) {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  return value.toFixed(6).replace(/\.?0+$/, "") || "0";
+}
+
+function deriveActiveUnrealizedPnl(
+  marketValueUsdc: string,
+  costUsdc: string,
+  fallbackPnlUsdc: string
+) {
+  const marketValue = Number(marketValueUsdc);
+  const cost = Number(costUsdc);
+
+  // If cost basis is missing, keep the upstream/fallback PnL instead of inventing one.
+  if (!Number.isFinite(marketValue) || !Number.isFinite(cost) || cost === 0) {
+    return fallbackPnlUsdc;
+  }
+
+  return formatDecimalNumber(marketValue - cost);
+}
+
 function hasExposure(data: PositionData | undefined, decimals: number) {
   if (!data) {
     return false;
@@ -298,7 +339,13 @@ function resolveSideTokenBalance(raw: ClobPosition, side: "yes" | "no") {
     return byName;
   }
 
-  const positionIds = Array.isArray(raw.market?.position_ids) ? raw.market?.position_ids : [];
+  const marketRecord = raw.market as Record<string, unknown> | undefined;
+  const positionIds = Array.isArray(raw.market?.position_ids)
+    ? raw.market?.position_ids
+    : [
+      marketRecord?.yesPositionId,
+      marketRecord?.noPositionId
+    ];
   const sideIndex = side === "yes" ? 0 : 1;
   const positionId = positionIds[sideIndex];
   if (!positionId || typeof raw.tokensBalance !== "object" || raw.tokensBalance === null) {
@@ -327,6 +374,14 @@ function resolveWinningSide(raw: ClobPosition) {
     return "no" as const;
   }
 
+  const winningOutcomeIndex = toNumberValue((raw.market as Record<string, unknown> | undefined)?.winningOutcomeIndex);
+  if (winningOutcomeIndex === 0) {
+    return "yes" as const;
+  }
+  if (winningOutcomeIndex === 1) {
+    return "no" as const;
+  }
+
   if (!Array.isArray(raw.market?.payout_numerators)) {
     return null;
   }
@@ -349,6 +404,26 @@ function resolveWinningSide(raw: ClobPosition) {
   }
 
   return null;
+}
+
+function resolveCurrentPrice(raw: ClobPosition, side: "yes" | "no") {
+  const latestTrade = raw.latestTrade;
+  if (!latestTrade || typeof latestTrade !== "object") {
+    return undefined;
+  }
+
+  const direct = side === "yes"
+    ? toNumberValue(latestTrade.latestYesPrice)
+    : toNumberValue(latestTrade.latestNoPrice);
+  if (direct !== undefined) {
+    return direct;
+  }
+
+  if (side !== "yes") {
+    return undefined;
+  }
+
+  return toNumberValue(latestTrade.outcomeTokenPrice);
 }
 
 function resolveClaimable(
@@ -405,8 +480,19 @@ function toTrackedPosition(
   const statusRaw = toStringValue(raw.market?.status)?.toLowerCase() ?? "";
   const isSettled = closed || statusRaw.includes("resolved") || statusRaw.includes("closed");
   const marketValueUsdc = normalizeTokenAmount(sideData.marketValue, decimals);
+  const costUsdc = normalizeTokenAmount(sideData.cost, decimals);
+  const fallbackUnrealizedPnlUsdc = normalizeTokenAmount(sideData.unrealizedPnl, decimals);
+  const currentPrice = resolveCurrentPrice(raw, side);
   const claimable = resolveClaimable(raw, side, sideData, isSettled);
   const sideBalance = resolveSideTokenBalance(raw, side);
+  const normalizedSideBalance = normalizeTokenAmount(sideBalance, decimals);
+  const impliedActiveBalance =
+    !isSettled &&
+    currentPrice !== undefined &&
+    currentPrice > 0 &&
+    Number(marketValueUsdc) > 0
+      ? formatDecimalNumber(Number(marketValueUsdc) / currentPrice)
+      : null;
 
   return {
     id: `${marketId}:${side}`,
@@ -415,17 +501,22 @@ function toTrackedPosition(
     marketTitle,
     side,
     status: isSettled ? "settled" : "active",
-    costUsdc: normalizeTokenAmount(sideData.cost, decimals),
+    costUsdc,
     marketValueUsdc,
-    unrealizedPnlUsdc: normalizeTokenAmount(sideData.unrealizedPnl, decimals),
+    unrealizedPnlUsdc: isSettled
+      ? fallbackUnrealizedPnlUsdc
+      : deriveActiveUnrealizedPnl(marketValueUsdc, costUsdc, fallbackUnrealizedPnlUsdc),
     realizedPnlUsdc: normalizeTokenAmount(sideData.realisedPnl, decimals),
     claimable,
-    tokenBalance: normalizeTokenAmount(sideBalance, decimals),
+    tokenBalance: impliedActiveBalance ?? normalizedSideBalance,
+    currentPrice,
+    hasVerifiedPricing: isSettled ? false : Number(marketValueUsdc) > 0,
     endsAt: toIsoDateString(
       raw.market?.ends_at ??
       (raw.market as any)?.endsAt ??
       (raw.market as any)?.expirationTimestamp ??
       (raw.market as any)?.expirationDate ??
+      (raw.market as any)?.deadline ??
       (raw.market as any)?.resolved_at ??
       (raw.market as any)?.closed_at ??
       (raw.market as any)?.close_date
@@ -463,6 +554,7 @@ function toTrackedAmmPosition(raw: AmmPosition, decimals: number): TrackedPositi
   const closed = raw.market?.closed === true;
   const statusRaw = toStringValue(raw.market?.status)?.toLowerCase() ?? "";
   const isSettled = closed || statusRaw.includes("resolved") || statusRaw.includes("closed");
+  const fallbackUnrealizedPnlUsdc = "0";
 
   return {
     id: `${marketId}:${side}`,
@@ -473,15 +565,17 @@ function toTrackedAmmPosition(raw: AmmPosition, decimals: number): TrackedPositi
     status: isSettled ? "settled" : "active",
     costUsdc: costRaw,
     marketValueUsdc: sharesRaw,   // approximate: shares held (no live price multiplied)
-    unrealizedPnlUsdc: "0",
+    unrealizedPnlUsdc: isSettled ? fallbackUnrealizedPnlUsdc : deriveActiveUnrealizedPnl(sharesRaw, costRaw, fallbackUnrealizedPnlUsdc),
     realizedPnlUsdc: "0",
     claimable: false,
     tokenBalance: sharesRaw,
+    hasVerifiedPricing: false,
     endsAt: toIsoDateString(
       raw.market?.ends_at ??
       (raw.market as any)?.endsAt ??
       (raw.market as any)?.expirationTimestamp ??
       (raw.market as any)?.expirationDate ??
+      (raw.market as any)?.deadline ??
       (raw.market as any)?.resolved_at ??
       (raw.market as any)?.closed_at ??
       (raw.market as any)?.close_date
@@ -525,7 +619,11 @@ function normalizePortfolioPositions(
     if (pos) positions.push(pos);
   }
 
-  const active = positions.filter((position) => position.status === "active" && Number(position.tokenBalance) >= 0.1);
+  const active = positions.filter(
+    (position) =>
+      position.status === "active" &&
+      (Number(position.marketValueUsdc) > 0 || Number(position.tokenBalance) > 0)
+  );
   const settled = positions.filter((position) => position.status === "settled");
 
   return {

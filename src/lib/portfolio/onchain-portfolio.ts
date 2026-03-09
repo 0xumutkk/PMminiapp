@@ -18,7 +18,7 @@
  *   4. Return TrackedPosition entries for every non-zero balance
  */
 
-import { createPublicClient, http, parseAbi, isAddress } from "viem";
+import { createPublicClient, fallback, http, parseAbi, isAddress } from "viem";
 import { base } from "viem/chains";
 import type { PortfolioPositionsSnapshot, TrackedPosition } from "./limitless-portfolio";
 
@@ -47,10 +47,13 @@ export type AmmMarketRef = {
      * itself for correctness, but keep this field for structural compatibility.
      */
     positionIds?: [string, string];
-    yesPrice: number;
-    noPrice: number;
+    yesPrice?: number;
+    noPrice?: number;
     fromHistory?: boolean;
     endsAt?: string;
+    status?: string;
+    expired?: boolean;
+    winningOutcomeIndex?: 0 | 1 | null;
 };
 
 export type PositionCostBasisEntry = {
@@ -68,9 +71,22 @@ const CT_ADDRESS = "0xC9c98965297Bc527861c898329Ee280632B76e18";
 const CT_ADDRESS_LOWER = CT_ADDRESS.toLowerCase();
 
 function createViemClient() {
-    const rpcUrl =
-        process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org";
-    return createPublicClient({ chain: base, transport: http(rpcUrl) });
+    const rpcUrls = [
+        process.env.NEXT_PUBLIC_BASE_RPC_URL,
+        "https://base-rpc.publicnode.com",
+        "https://base.drpc.org",
+        "https://mainnet.base.org"
+    ].filter((value, index, self): value is string => Boolean(value) && self.indexOf(value) === index);
+
+    const transports = rpcUrls.map((url) => http(url, {
+        retryCount: 0,
+        timeout: 4_000
+    }));
+
+    return createPublicClient({
+        chain: base,
+        transport: transports.length === 1 ? transports[0] : fallback(transports)
+    });
 }
 
 /**
@@ -242,6 +258,53 @@ function formatUsdc(value: number): string {
     return value.toFixed(6).replace(/\.?0+$/, "") || "0";
 }
 
+function isVerifiedActivePrice(value: number | undefined): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+async function multicallInChunks(
+    client: ReturnType<typeof createViemClient>,
+    contracts: readonly unknown[],
+    chunkSize = 40
+) {
+    const results: Array<{ status: string; result?: unknown }> = [];
+
+    for (let index = 0; index < contracts.length; index += chunkSize) {
+        const chunk = contracts.slice(index, index + chunkSize) as Parameters<typeof client.multicall>[0]["contracts"];
+        const chunkResults = await client.multicall({
+            contracts: chunk,
+            allowFailure: true
+        });
+        results.push(...(chunkResults as Array<{ status: string; result?: unknown }>));
+    }
+
+    return results;
+}
+
+async function resolveMarketsWithIds(
+    client: ReturnType<typeof createViemClient>,
+    markets: AmmMarketRef[],
+    chunkSize = 4
+) {
+    const resolved: Array<{
+        market: AmmMarketRef;
+        ids: { ctAddress: `0x${string}`; conditionId: `0x${string}`; yesId: bigint; noId: bigint } | null;
+    }> = [];
+
+    for (let index = 0; index < markets.length; index += chunkSize) {
+        const chunk = markets.slice(index, index + chunkSize);
+        const chunkResolved = await Promise.all(
+            chunk.map(async (market) => ({
+                market,
+                ids: await getFpmmPositionIds(market.contractAddress as `0x${string}`, client)
+            }))
+        );
+        resolved.push(...chunkResolved);
+    }
+
+    return resolved;
+}
+
 function resolveCostBasisEntry(
     costBasisMap: Record<string, PositionCostBasisEntry>,
     market: AmmMarketRef,
@@ -299,12 +362,7 @@ export async function fetchOnchainAmmPositions(
     const client = createViemClient();
 
     // Resolve position IDs for each FPMM from chain (not from API positionIds)
-    const resolved = await Promise.all(
-        validMarkets.map(async (m) => {
-            const ids = await getFpmmPositionIds(m.contractAddress as `0x${string}`, client);
-            return { market: m, ids };
-        })
-    );
+    const resolved = await resolveMarketsWithIds(client, validMarkets);
 
     const withIds = resolved.filter((r) => r.ids !== null) as Array<{
         market: AmmMarketRef;
@@ -331,9 +389,9 @@ export async function fetchOnchainAmmPositions(
         }
     ]);
 
-    let results: Awaited<ReturnType<typeof client.multicall>>;
+    let results: Array<{ status: string; result?: unknown }>;
     try {
-        results = await client.multicall({ contracts, allowFailure: true });
+        results = await multicallInChunks(client, contracts);
     } catch {
         return emptySnapshot(walletAddress);
     }
@@ -349,9 +407,9 @@ export async function fetchOnchainAmmPositions(
         args: [ids.conditionId] as const
     }));
 
-    let payoutResults: Awaited<ReturnType<typeof client.multicall>> = [];
+    let payoutResults: Array<{ status: string; result?: unknown }> = [];
     try {
-        payoutResults = await client.multicall({ contracts: payoutContracts, allowFailure: true });
+        payoutResults = await multicallInChunks(client, payoutContracts);
     } catch { /* non-fatal */ }
 
     // For resolved markets, get payout numerators for YES (index 0) and NO (index 1)
@@ -360,9 +418,9 @@ export async function fetchOnchainAmmPositions(
         { address: ids.ctAddress, abi: CT_ABI, functionName: "payoutNumerators" as const, args: [ids.conditionId, 1n] as const }
     ]);
 
-    let numeratorResults: Awaited<ReturnType<typeof client.multicall>> = [];
+    let numeratorResults: Array<{ status: string; result?: unknown }> = [];
     try {
-        numeratorResults = await client.multicall({ contracts: payoutNumeratorContracts, allowFailure: true });
+        numeratorResults = await multicallInChunks(client, payoutNumeratorContracts);
     } catch { /* non-fatal */ }
 
     for (let i = 0; i < withIds.length; i++) {
@@ -382,7 +440,7 @@ export async function fetchOnchainAmmPositions(
         const yesNumerator = yesNumEntry?.status === "success" ? BigInt(String(yesNumEntry.result)) : 0n;
         const noNumerator = noNumEntry?.status === "success" ? BigInt(String(noNumEntry.result)) : 0n;
 
-        const sides: Array<{ result: McEntry; side: "yes" | "no"; price: number; outcomeIndex: 0 | 1 }> = [
+        const sides: Array<{ result: McEntry; side: "yes" | "no"; price: number | undefined; outcomeIndex: 0 | 1 }> = [
             { result: yesResult as McEntry, side: "yes", price: market.yesPrice, outcomeIndex: 0 },
             { result: noResult as McEntry, side: "no", price: market.noPrice, outcomeIndex: 1 }
         ];
@@ -404,8 +462,8 @@ export async function fetchOnchainAmmPositions(
                 const redeemableUsdc = formatUsdc(redeemableUsdcNum);
                 const isWinner = numerator > 0n;
 
-                // We include settled positions even with 0 balance if they were discovered via history
-                if (balance <= 0n && !isWinner && !market.fromHistory) continue;
+                // Zero-balance settled history must come from transfer history, not inferred on-chain.
+                if (balance <= 0n) continue;
 
                 // Calculate PNL based on real cost or default to 0
                 const costNum = actualCost ? Number(actualCost) : 0;
@@ -427,19 +485,19 @@ export async function fetchOnchainAmmPositions(
                     claimable: isWinner && balance > 0n,
                     tokenBalance: formatUsdc(shares),
                     currentPrice: payoutRatio,
+                    hasVerifiedPricing: true,
                     endsAt: market.endsAt
                 });
             } else {
-                // Active market: ONLY show if they have balance OR if discovered via history.
-                if (balance <= 0n && !market.fromHistory) continue;
+                if (balance <= 0n) continue;
 
-                const isSold = balance <= 0n;
-                const valueNum = isSold ? 0 : (shares * price);
+                const hasVerifiedPrice = isVerifiedActivePrice(price);
+                const valueNum = hasVerifiedPrice ? shares * price : 0;
 
                 // Calculate unrealized PNL
-                const costNum = actualCost ? Number(actualCost) : (isSold ? 0 : (shares * price));
-                const pnlNum = isSold ? 0 : (valueNum - costNum);
-                const pnlUsdc = actualCost ? formatUsdc(pnlNum) : "0";
+                const costNum = actualCost ? Number(actualCost) : 0;
+                const pnlNum = valueNum - costNum;
+                const pnlUsdc = actualCost && hasVerifiedPrice ? formatUsdc(pnlNum) : "0";
 
                 positions.push({
                     id: `${market.id}:${side}`,
@@ -447,23 +505,24 @@ export async function fetchOnchainAmmPositions(
                     marketSlug: market.slug,
                     marketTitle: market.title,
                     side,
-                    status: isSold ? "settled" : "active",
-                    costUsdc: actualCost || (isSold ? "0" : formatUsdc(costNum)),
-                    marketValueUsdc: formatUsdc(valueNum),
+                    status: "active",
+                    costUsdc: actualCost || "0",
+                    marketValueUsdc: hasVerifiedPrice ? formatUsdc(valueNum) : "0",
                     unrealizedPnlUsdc: pnlUsdc,
                     realizedPnlUsdc: "0",
                     claimable: false,
                     tokenBalance: formatUsdc(shares),
-                    currentPrice: price,
-                    endsAt: market.endsAt,
-                    // Special internal property to indicate this was a sale
-                    isSold: isSold ? true : undefined
-                } as any);
+                    currentPrice: hasVerifiedPrice ? price : undefined,
+                    hasVerifiedPricing: hasVerifiedPrice,
+                    endsAt: market.endsAt
+                });
             }
         }
     }
 
-    const active = positions.filter((p) => p.status === "active" && Number(p.tokenBalance) >= 0.1);
+    const active = positions.filter(
+        (p) => p.status === "active" && (Number(p.marketValueUsdc) > 0 || Number(p.tokenBalance) > 0)
+    );
     const settled = positions.filter((p) => p.status === "settled");
     const totalActiveValue = active.reduce((sum, p) => sum + Number(p.marketValueUsdc), 0);
     const totalClaimable = settled.filter((p) => p.claimable).reduce((sum, p) => sum + Number(p.marketValueUsdc), 0);
@@ -475,7 +534,7 @@ export async function fetchOnchainAmmPositions(
         settled,
         totals: {
             activeMarketValueUsdc: formatUsdc(totalActiveValue),
-            unrealizedPnlUsdc: "0",
+            unrealizedPnlUsdc: formatUsdc(active.reduce((sum, p) => sum + Number(p.unrealizedPnlUsdc), 0)),
             claimableUsdc: formatUsdc(totalClaimable)
         }
     };

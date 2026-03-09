@@ -94,3 +94,163 @@ test("claimable stays false when upstream does not provide a redeemability signa
   assert.equal(yes?.claimable, false);
   assert.equal(snapshot.totals.claimableUsdc, "0");
 });
+
+test("current API latestTrade fields are mapped onto active positions", async () => {
+  globalThis.fetch = async () =>
+    Response.json({
+      clob: [
+        {
+          market: {
+            id: 123,
+            slug: "market-3",
+            title: "Market 3",
+            status: "FUNDED",
+            closed: false,
+            expirationDate: "2026-03-09T14:00:00.000Z",
+            collateral: { decimals: 6 }
+          },
+          latestTrade: {
+            latestYesPrice: 0.62,
+            latestNoPrice: 0.38
+          },
+          tokensBalance: {
+            yes: "2500000"
+          },
+          positions: {
+            yes: {
+              cost: "1500000",
+              marketValue: "1550000",
+              unrealizedPnl: "50000",
+              realisedPnl: "0"
+            }
+          }
+        }
+      ]
+    });
+
+  const snapshot = await fetchPublicPortfolioPositions(TEST_ACCOUNT);
+  const yes = snapshot.active.find((item) => item.side === "yes");
+
+  assert.equal(yes?.currentPrice, 0.62);
+  assert.equal(yes?.endsAt, "2026-03-09T14:00:00.000Z");
+});
+
+test("active positions derive pnl from worth and cost when upstream pnl drifts", async () => {
+  globalThis.fetch = async () =>
+    Response.json({
+      clob: [
+        {
+          market: {
+            id: "m-3b",
+            slug: "market-3b",
+            title: "Market 3B",
+            status: "FUNDED",
+            closed: false,
+            collateral: { decimals: 6 }
+          },
+          latestTrade: {
+            latestYesPrice: 0.62
+          },
+          tokensBalance: {
+            yes: "2500000"
+          },
+          positions: {
+            yes: {
+              cost: "1500000",
+              marketValue: "1550000",
+              unrealizedPnl: "-250000",
+              realisedPnl: "0"
+            }
+          }
+        }
+      ]
+    });
+
+  const snapshot = await fetchPublicPortfolioPositions(TEST_ACCOUNT);
+  const yes = snapshot.active.find((item) => item.side === "yes");
+
+  assert.equal(yes?.marketValueUsdc, "1.55");
+  assert.equal(yes?.costUsdc, "1.5");
+  assert.equal(yes?.unrealizedPnlUsdc, "0.05");
+  assert.equal(snapshot.totals.unrealizedPnlUsdc, "0.05");
+});
+
+test("claimable supports winningOutcomeIndex and position-id keyed balances", async () => {
+  globalThis.fetch = async () =>
+    Response.json({
+      clob: [
+        {
+          market: {
+            id: "m-4",
+            slug: "market-4",
+            title: "Market 4",
+            status: "resolved",
+            closed: true,
+            winningOutcomeIndex: 1,
+            yesPositionId: "111",
+            noPositionId: "222",
+            collateral: { decimals: 6 }
+          },
+          tokensBalance: {
+            "222": "1000000"
+          },
+          positions: {
+            no: {
+              cost: "3000000",
+              marketValue: "1000000",
+              unrealizedPnl: "0",
+              realisedPnl: "0"
+            }
+          }
+        }
+      ]
+    });
+
+  const snapshot = await fetchPublicPortfolioPositions(TEST_ACCOUNT);
+  const no = snapshot.settled.find((item) => item.side === "no");
+
+  assert.equal(no?.claimable, true);
+  assert.equal(snapshot.totals.claimableUsdc, "1");
+});
+
+test("active positions use market value and current price when raw token balance is under-scaled", async () => {
+  globalThis.fetch = async () =>
+    Response.json({
+      clob: [
+        {
+          market: {
+            id: 59724,
+            slug: "market-5",
+            title: "Market 5",
+            status: "FUNDED",
+            closed: false,
+            deadline: "2026-03-09T18:00:00.000Z",
+            collateral: { decimals: 6 }
+          },
+          latestTrade: {
+            latestYesPrice: 0.01,
+            latestNoPrice: 0.99
+          },
+          tokensBalance: {
+            yes: "81270"
+          },
+          positions: {
+            yes: {
+              cost: "9915",
+              marketValue: "239910",
+              unrealizedPnl: "229995",
+              realisedPnl: "0"
+            }
+          }
+        }
+      ]
+    });
+
+  const snapshot = await fetchPublicPortfolioPositions(TEST_ACCOUNT);
+  const yes = snapshot.active.find((item) => item.side === "yes");
+
+  assert.equal(snapshot.active.length, 1);
+  assert.equal(yes?.marketValueUsdc, "0.23991");
+  assert.equal(yes?.tokenBalance, "23.991");
+  assert.equal(snapshot.totals.activeMarketValueUsdc, "0.23991");
+});

@@ -10,10 +10,17 @@ import {
 } from "@/lib/portfolio/onchain-portfolio";
 import { getRequestId } from "@/lib/security/request-context";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/security/rate-limit";
+import { getSecurityRedisClient } from "@/lib/security/redis-store";
 import { isAddress } from "viem";
 import * as fs from "node:fs";
 
 export const runtime = "nodejs";
+const ACTIVE_MARKET_PAGE_LIMIT = 6;
+const ONCHAIN_ENRICH_TIMEOUT_MS = 20_000;
+const SNAPSHOT_CACHE_TTL_SECONDS = 300;
+const FAST_SNAPSHOT_MAX_AGE_MS = 20_000;
+const ACTIVE_SNAPSHOT_VALUE_DROP_RATIO = 0.5;
+const SETTLED_SNAPSHOT_COUNT_DROP_RATIO = 0.5;
 
 /**
  * Fetch all active AMM markets from the Limitless API and return the subset
@@ -30,11 +37,43 @@ type HistoryTransferRecord = {
   txHash: string;
   contractAddress?: string;
   tokenAmountRaw: string;
+  tokenId?: string;
+  timestamp?: string;
+};
+
+type HistoryMarketAction = {
+  action: "sell" | "redeem";
+  contractAddress: string;
+  tokenId: string;
+  txHash?: string;
+  timestamp?: string;
+  proceedsUsdc?: string;
+};
+
+type HistoricalActionState = {
+  action: "sell" | "redeem";
+  proceedsUsdc: string;
+  timestamp?: string;
 };
 
 type TransferHistorySummary = {
   fpmmAddresses: string[];
   costBasisMap: Record<string, PositionCostBasisEntry>;
+  tokenSideMap: Record<string, PositionSide>;
+  marketActions: HistoryMarketAction[];
+  inboundPositionTokens: Array<{
+    contractAddress: string;
+    tokenId: string;
+    timestamp?: string;
+  }>;
+};
+
+type RecentIncomingTransfer = {
+  contractAddress: string;
+  tokenAmountRaw: string;
+  tokenId: string;
+  txHash?: string;
+  timestamp?: string;
 };
 
 function normalizeRawTokenAmount(raw: unknown, decimals: number) {
@@ -98,6 +137,121 @@ function parseOutcomeSide(raw: unknown): PositionSide | null {
   return null;
 }
 
+async function fetchRecentIncomingCtTransfers(account: string): Promise<RecentIncomingTransfer[]> {
+  const rpcUrls = [
+    process.env.NEXT_PUBLIC_BASE_RPC_URL,
+    "https://base-rpc.publicnode.com",
+    "https://base.drpc.org",
+    "https://mainnet.base.org"
+  ].filter((value, index, self): value is string => Boolean(value) && self.indexOf(value) === index);
+  const TRANSFER_SINGLE_TOPIC =
+    "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62";
+  const zeroTopic = "0x0000000000000000000000000000000000000000000000000000000000000000";
+  const zeroAddress = "0x0000000000000000000000000000000000000000";
+  const accountTopic = `0x${account.toLowerCase().slice(2).padStart(64, "0")}`;
+
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const blockNumberResponse = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_blockNumber",
+          params: [],
+          id: 1
+        }),
+        signal: AbortSignal.timeout(5_000)
+      });
+
+      if (!blockNumberResponse.ok) {
+        continue;
+      }
+
+      const blockNumberPayload = (await blockNumberResponse.json()) as { result?: string };
+      const latestBlock = blockNumberPayload.result ? Number(BigInt(blockNumberPayload.result)) : Number.NaN;
+      if (!Number.isFinite(latestBlock) || latestBlock <= 0) {
+        continue;
+      }
+
+      const fromBlock = Math.max(0, latestBlock - 8_000);
+      const logsResponse = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_getLogs",
+          params: [{
+            address: CT_ADDRESS,
+            fromBlock: `0x${fromBlock.toString(16)}`,
+            toBlock: "latest",
+            topics: [TRANSFER_SINGLE_TOPIC, null, null, accountTopic]
+          }],
+          id: 1
+        }),
+        signal: AbortSignal.timeout(8_000)
+      });
+
+      if (!logsResponse.ok) {
+        continue;
+      }
+
+      const logsPayload = (await logsResponse.json()) as { result?: unknown[]; error?: unknown };
+      if (!Array.isArray(logsPayload.result)) {
+        continue;
+      }
+
+      const transfers: RecentIncomingTransfer[] = [];
+      for (const entry of logsPayload.result) {
+        if (!entry || typeof entry !== "object") continue;
+        const log = entry as Record<string, unknown>;
+        const topics = Array.isArray(log.topics) ? log.topics : [];
+        const data = typeof log.data === "string" ? log.data : "";
+        if (topics.length < 4 || !data.startsWith("0x") || data.length < 130) continue;
+
+        const operatorTopic = typeof topics[1] === "string" ? topics[1] : zeroTopic;
+        const fromTopic = typeof topics[2] === "string" ? topics[2] : zeroTopic;
+        const operatorAddress = `0x${operatorTopic.slice(-40)}`;
+        const fromAddress = `0x${fromTopic.slice(-40)}`;
+        const contractAddress = [operatorAddress, fromAddress].find((candidate) => {
+          const normalized = candidate.toLowerCase();
+          return normalized !== zeroAddress && normalized !== CT_ADDRESS_LOWER && isAddress(candidate);
+        });
+
+        if (!contractAddress) continue;
+
+        try {
+          const raw = data.slice(2);
+          const tokenId = BigInt(`0x${raw.slice(0, 64)}`).toString();
+          const tokenAmountRaw = BigInt(`0x${raw.slice(64, 128)}`).toString();
+          transfers.push({
+            contractAddress: contractAddress.toLowerCase(),
+            tokenId,
+            tokenAmountRaw,
+            txHash: typeof log.transactionHash === "string" ? log.transactionHash : undefined,
+            timestamp:
+              typeof log.blockTimestamp === "string"
+                ? new Date(Number(BigInt(log.blockTimestamp)) * 1000).toISOString()
+                : undefined
+          });
+        } catch {
+          continue;
+        }
+      }
+
+      if (transfers.length > 0) {
+        return transfers;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return [];
+}
+
 /**
  * Fetch recent ERC-1155 receipts for the wallet and derive two things:
  * 1. FPMM addresses seen in history, so we can still discover historical markets.
@@ -107,15 +261,19 @@ function parseOutcomeSide(raw: unknown): PositionSide | null {
  * returns no cost basis, which otherwise forces Active PNL to stay at zero.
  */
 async function fetchTransferHistorySummary(account: string): Promise<TransferHistorySummary> {
+  const accountLower = account.toLowerCase();
   try {
     const fpmmAddresses = new Set<string>();
     const transferRecords: HistoryTransferRecord[] = [];
+    const tokenSideMap: Record<string, PositionSide> = {};
+    const marketActions: HistoryMarketAction[] = [];
+    const inboundPositionTokens: Array<{ contractAddress: string; tokenId: string }> = [];
     const txHashes = new Set<string>();
     const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-    const accountLower = account.toLowerCase();
+    const inboundTokenKeys = new Set<string>();
 
     let nextPageParams: string | null = null;
-    for (let page = 0; page < 2; page++) {
+    for (let page = 0; page < 6; page++) {
       const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=to&type=ERC-1155`;
       const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
       try {
@@ -123,8 +281,8 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
           headers: { Accept: "application/json" },
           cache: "no-store",
           // @ts-ignore
-          next: { revalidate: 30 },
-          signal: AbortSignal.timeout(5000) // 5s timeout
+          next: { revalidate: 0 },
+          signal: AbortSignal.timeout(8000)
         });
         if (!response.ok) break;
 
@@ -144,11 +302,18 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
             (typeof r.transaction_hash === "string" ? r.transaction_hash : undefined) ??
             (typeof r.tx_hash === "string" ? r.tx_hash : undefined);
           const total = r.total as Record<string, unknown> | undefined;
+          const timestamp = typeof r.timestamp === "string" ? r.timestamp : undefined;
           const tokenAmountRaw =
             typeof total?.value === "string"
               ? total.value
               : typeof total?.value === "number"
                 ? String(total.value)
+                : undefined;
+          const tokenId =
+            typeof total?.token_id === "string"
+              ? total.token_id
+              : typeof total?.token_id === "number"
+                ? String(total.token_id)
                 : undefined;
 
           if (fromHash && fromHash !== ZERO_ADDRESS && isAddress(fromHash)) {
@@ -159,12 +324,14 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
               transferRecords.push({
                 txHash,
                 contractAddress: fromHash,
-                tokenAmountRaw
+                tokenAmountRaw,
+                tokenId,
+                timestamp
               });
               txHashes.add(txHash);
             }
           } else if (txHash && tokenAmountRaw) {
-            transferRecords.push({ txHash, tokenAmountRaw });
+            transferRecords.push({ txHash, tokenAmountRaw, tokenId, timestamp });
             txHashes.add(txHash);
           }
         }
@@ -186,13 +353,101 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
       }
     }
 
-    const txCostMeta = new Map<string, { contractAddress?: string; side: PositionSide | null; costUsdc?: string }>();
+    nextPageParams = null;
+    for (let page = 0; page < 6; page++) {
+      const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=from&type=ERC-1155`;
+      const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
+      try {
+        const response = await fetch(url, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          // @ts-ignore
+          next: { revalidate: 0 },
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!response.ok) break;
+
+        const payload = (await response.json()) as { items?: unknown[]; next_page_params?: Record<string, unknown> | null };
+        const items = Array.isArray(payload.items) ? payload.items : [];
+
+        for (const item of items) {
+          if (typeof item !== "object" || item === null) continue;
+          const r = item as Record<string, unknown>;
+          if (r.token_type !== "ERC-1155") continue;
+
+          const token = r.token as Record<string, unknown> | undefined;
+          if (typeof token?.address_hash !== "string" || token.address_hash.toLowerCase() !== CT_ADDRESS_LOWER) continue;
+
+          const to = r.to as Record<string, unknown> | undefined;
+          const toHash = typeof to?.hash === "string" ? to.hash.toLowerCase() : undefined;
+          const total = r.total as Record<string, unknown> | undefined;
+          const timestamp = typeof r.timestamp === "string" ? r.timestamp : undefined;
+          const txHash =
+            (typeof r.transaction_hash === "string" ? r.transaction_hash : undefined) ??
+            (typeof r.tx_hash === "string" ? r.tx_hash : undefined);
+          const tokenId =
+            typeof total?.token_id === "string"
+              ? total.token_id
+              : typeof total?.token_id === "number"
+                ? String(total.token_id)
+                : undefined;
+
+          if (!tokenId) continue;
+
+          if (toHash && toHash !== ZERO_ADDRESS && isAddress(toHash)) {
+            if (txHash) {
+              txHashes.add(txHash);
+            }
+            marketActions.push({
+              action: "sell",
+              contractAddress: toHash,
+              tokenId,
+              txHash,
+              timestamp
+            });
+          } else if (toHash === ZERO_ADDRESS) {
+            if (txHash) {
+              txHashes.add(txHash);
+            }
+            marketActions.push({
+              action: "redeem",
+              contractAddress: "",
+              tokenId,
+              txHash,
+              timestamp
+            });
+          }
+        }
+
+        if (payload.next_page_params && typeof payload.next_page_params === "object") {
+          const params = new URLSearchParams();
+          for (const [key, value] of Object.entries(payload.next_page_params)) {
+            if (value !== null && value !== undefined) {
+              params.set(key, String(value));
+            }
+          }
+          nextPageParams = params.toString();
+        } else {
+          break;
+        }
+      } catch (e) {
+        console.warn("Blockscout outgoing fetch failed:", e);
+        break;
+      }
+    }
+
+    const txMetaByHash = new Map<string, {
+      contractAddress?: string;
+      side: PositionSide | null;
+      costUsdc?: string;
+      proceedsUsdc?: string;
+    }>();
 
     await Promise.all(
-      Array.from(txHashes).slice(0, 20).map(async (txHash) => {
+      Array.from(txHashes).slice(0, 150).map(async (txHash) => {
         try {
           const txUrl = `https://base.blockscout.com/api/v2/transactions/${txHash}`;
-          const txResp = await fetch(txUrl, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(3000) });
+          const txResp = await fetch(txUrl, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(5000) });
           if (!txResp.ok) return;
           const tx = (await txResp.json()) as Record<string, unknown>;
           const toRecord = tx.to as Record<string, unknown> | undefined;
@@ -212,38 +467,43 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
             costUsdc = normalizeRawTokenAmount(investmentAmountRaw, 6);
           }
 
-          if (!costUsdc) {
-            const tokenTransfers = Array.isArray(tx.token_transfers) ? tx.token_transfers : [];
-            let rawUsdcSpent = 0n;
-            for (const transfer of tokenTransfers) {
-              if (!transfer || typeof transfer !== "object") continue;
-              const record = transfer as Record<string, unknown>;
-              const token = record.token as Record<string, unknown> | undefined;
-              const from = record.from as Record<string, unknown> | undefined;
-              const to = record.to as Record<string, unknown> | undefined;
-              const total = record.total as Record<string, unknown> | undefined;
-              const tokenAddress = typeof token?.address_hash === "string" ? token.address_hash.toLowerCase() : undefined;
-              const fromHash = typeof from?.hash === "string" ? from.hash.toLowerCase() : undefined;
-              const toHash = typeof to?.hash === "string" ? to.hash.toLowerCase() : undefined;
-              const rawValue = typeof total?.value === "string" ? total.value : undefined;
+          const tokenTransfers = Array.isArray(tx.token_transfers) ? tx.token_transfers : [];
+          let rawUsdcSpent = 0n;
+          let rawUsdcReceived = 0n;
+          for (const transfer of tokenTransfers) {
+            if (!transfer || typeof transfer !== "object") continue;
+            const record = transfer as Record<string, unknown>;
+            const token = record.token as Record<string, unknown> | undefined;
+            const from = record.from as Record<string, unknown> | undefined;
+            const to = record.to as Record<string, unknown> | undefined;
+            const total = record.total as Record<string, unknown> | undefined;
+            const tokenAddress = typeof token?.address_hash === "string" ? token.address_hash.toLowerCase() : undefined;
+            const fromHash = typeof from?.hash === "string" ? from.hash.toLowerCase() : undefined;
+            const toHash = typeof to?.hash === "string" ? to.hash.toLowerCase() : undefined;
+            const rawValue = typeof total?.value === "string" ? total.value : undefined;
 
-              if (
-                tokenAddress === USDC_ADDRESS_LOWER &&
-                fromHash === accountLower &&
-                rawValue &&
-                (!contractAddress || toHash === contractAddress)
-              ) {
-                rawUsdcSpent += BigInt(rawValue);
-              }
+            if (tokenAddress !== USDC_ADDRESS_LOWER || !rawValue) {
+              continue;
             }
 
-            if (rawUsdcSpent > 0n) {
-              costUsdc = normalizeRawTokenAmount(rawUsdcSpent.toString(), 6);
+            const amount = BigInt(rawValue);
+            if (fromHash === accountLower && (!contractAddress || toHash === contractAddress)) {
+              rawUsdcSpent += amount;
+            }
+            if (toHash === accountLower) {
+              rawUsdcReceived += amount;
             }
           }
 
-          txCostMeta.set(txHash, { contractAddress, side, costUsdc });
-        } catch { /* non-fatal */ }
+          if (!costUsdc && rawUsdcSpent > 0n) {
+            costUsdc = normalizeRawTokenAmount(rawUsdcSpent.toString(), 6);
+          }
+
+          const proceedsUsdc =
+            rawUsdcReceived > 0n ? normalizeRawTokenAmount(rawUsdcReceived.toString(), 6) : undefined;
+
+          txMetaByHash.set(txHash, { contractAddress, side, costUsdc, proceedsUsdc });
+        } catch { /* ignored */ }
       })
     );
 
@@ -256,7 +516,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
 
     const costBasisMap: Record<string, PositionCostBasisEntry> = {};
     for (const [txHash, transfers] of transfersByTx.entries()) {
-      const meta = txCostMeta.get(txHash);
+      const meta = txMetaByHash.get(txHash);
       const contractAddress =
         meta?.contractAddress ??
         transfers.find((transfer) => transfer.contractAddress && isAddress(transfer.contractAddress))?.contractAddress;
@@ -266,6 +526,21 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
       }
 
       fpmmAddresses.add(contractAddress.toLowerCase());
+
+      for (const transfer of transfers) {
+        if (transfer.tokenId) {
+          const inboundKey = `${contractAddress.toLowerCase()}:${transfer.tokenId}`;
+          if (!inboundTokenKeys.has(inboundKey)) {
+            inboundTokenKeys.add(inboundKey);
+            inboundPositionTokens.push({
+              contractAddress: contractAddress.toLowerCase(),
+              tokenId: transfer.tokenId,
+              timestamp: transfer.timestamp
+            });
+          }
+          tokenSideMap[inboundKey] = meta.side;
+        }
+      }
 
       if (!meta?.side || !meta.costUsdc) {
         continue;
@@ -283,57 +558,91 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
       };
     }
 
+    const recentTransfers = await fetchRecentIncomingCtTransfers(account);
+    for (const transfer of recentTransfers) {
+      fpmmAddresses.add(transfer.contractAddress);
+      const inboundKey = `${transfer.contractAddress}:${transfer.tokenId}`;
+      if (!inboundTokenKeys.has(inboundKey)) {
+        inboundTokenKeys.add(inboundKey);
+        inboundPositionTokens.push({
+          contractAddress: transfer.contractAddress,
+          tokenId: transfer.tokenId,
+          timestamp: transfer.timestamp
+        });
+      }
+    }
+
+    const enrichedMarketActions = marketActions.map((action) => {
+      if (!action.txHash) {
+        return action;
+      }
+
+      const meta = txMetaByHash.get(action.txHash);
+      if (!meta?.proceedsUsdc) {
+        return action;
+      }
+
+      return {
+        ...action,
+        proceedsUsdc: meta.proceedsUsdc
+      };
+    });
+
     return {
       fpmmAddresses: Array.from(fpmmAddresses),
-      costBasisMap
+      costBasisMap,
+      tokenSideMap,
+      marketActions: enrichedMarketActions,
+      inboundPositionTokens
     };
   } catch {
     return {
       fpmmAddresses: [],
-      costBasisMap: {}
+      costBasisMap: {},
+      tokenSideMap: {},
+      marketActions: [],
+      inboundPositionTokens: []
     };
   }
 }
 
-async function fetchAmmMarketsForOnchain(historyAddresses: string[] = []): Promise<AmmMarketRef[]> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([
+    promise.finally(() => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }),
+    timeoutPromise
+  ]);
+}
+
+async function fetchAmmMarketsForOnchain(
+  historyAddresses: string[] = [],
+  includeCatalog = true
+): Promise<AmmMarketRef[]> {
   const baseUrl =
     (process.env.LIMITLESS_API_BASE_URL ?? "https://api.limitless.exchange")
       .replace(/\/api-v1\/?$/, "")
       .replace(/\/$/, "");
 
   const limit = 25;
-
+  const redis = includeCatalog ? await getSecurityRedisClient() : null;
+  const cacheKey = "pm-miniapp:amm-markets-raw-rows";
   const fetchHeaders = {
     Accept: "application/json",
     Origin: "https://limitless.exchange",
     Referer: "https://limitless.exchange/",
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
   };
-
-  async function fetchPage(pathname: string, page: number, extraParams?: Record<string, string>): Promise<unknown[]> {
-    try {
-      const url = new URL(pathname, baseUrl);
-      url.searchParams.set("page", String(page));
-      url.searchParams.set("limit", String(limit));
-      url.searchParams.set("sortBy", "ending_soon");
-      url.searchParams.set("tradeType", "amm");
-      if (extraParams) {
-        for (const [k, v] of Object.entries(extraParams)) url.searchParams.set(k, v);
-      }
-      const response = await fetch(url.toString(), { headers: fetchHeaders, cache: "no-store", signal: AbortSignal.timeout(6000) });
-      if (!response.ok) return [];
-      const payload = (await response.json()) as { data?: unknown[] };
-      return Array.isArray(payload.data) ? payload.data : [];
-    } catch {
-      return [];
-    }
-  }
-
-  // Fetch ACTIVE markets (10 pages) + RESOLVED markets (10 pages) in parallel
-  const allPageResults = await Promise.all([
-    ...Array.from({ length: 10 }, (_, i) => fetchPage("/markets/active", i + 1)),
-    ...Array.from({ length: 10 }, (_, i) => fetchPage("/markets", i + 1, { status: "resolved" })),
-  ]);
 
   function flattenLimitlessRows(input: any[]): any[] {
     const output: any[] = [];
@@ -352,8 +661,116 @@ async function fetchAmmMarketsForOnchain(historyAddresses: string[] = []): Promi
     return output;
   }
 
-  const rows = flattenLimitlessRows(allPageResults.flat());
-  console.log(`[Positions API] Fetched ${allPageResults.flat().length} raw rows, ${rows.length} after flattening`);
+  let rows: any[] = [];
+  let cachedFound = false;
+
+  async function fetchPage(pathname: string, page: number, extraParams?: Record<string, string>): Promise<{
+    rows: unknown[];
+    totalMarketsCount?: number;
+  }> {
+    try {
+      const url = new URL(pathname, baseUrl);
+      url.searchParams.set("page", String(page));
+      url.searchParams.set("limit", String(limit));
+      url.searchParams.set("sortBy", "ending_soon");
+      url.searchParams.set("tradeType", "amm");
+      if (extraParams) {
+        for (const [k, v] of Object.entries(extraParams)) url.searchParams.set(k, v);
+      }
+      const response = await fetch(url.toString(), {
+        headers: fetchHeaders,
+        cache: "no-store",
+        signal: AbortSignal.timeout(6000)
+      });
+      if (!response.ok) {
+        return { rows: [] };
+      }
+      const payload = (await response.json()) as { data?: unknown[]; totalMarketsCount?: unknown };
+      const totalMarketsCount =
+        typeof payload.totalMarketsCount === "number"
+          ? payload.totalMarketsCount
+          : typeof payload.totalMarketsCount === "string"
+            ? Number(payload.totalMarketsCount)
+            : undefined;
+      return {
+        rows: Array.isArray(payload.data) ? payload.data : [],
+        totalMarketsCount: Number.isFinite(totalMarketsCount) ? totalMarketsCount : undefined
+      };
+    } catch {
+      return { rows: [] };
+    }
+  }
+
+  async function fetchActiveCatalogRows(forceRefresh = false) {
+    if (!forceRefresh && rows.length > 0) {
+      return rows;
+    }
+
+    if (!forceRefresh && redis && !cachedFound) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          rows = JSON.parse(cached);
+          cachedFound = true;
+          console.log(`[Positions API] Serving ${rows.length} raw rows from Redis cache`);
+          return rows;
+        }
+      } catch (e) {
+        console.warn("[Positions API] Redis get failed for raw rows:", e);
+      }
+    }
+
+    const aggregatedRows: unknown[] = [];
+    let totalPages = ACTIVE_MARKET_PAGE_LIMIT;
+
+    for (let page = 1; page <= totalPages; page++) {
+      const pageResult = await fetchPage("/markets/active", page);
+      aggregatedRows.push(...pageResult.rows);
+
+      if (page === 1 && pageResult.totalMarketsCount && pageResult.totalMarketsCount > 0) {
+        totalPages = Math.min(
+          ACTIVE_MARKET_PAGE_LIMIT,
+          Math.max(1, Math.ceil(pageResult.totalMarketsCount / limit))
+        );
+      }
+
+      if (pageResult.rows.length < limit) {
+        break;
+      }
+    }
+
+    rows = flattenLimitlessRows(aggregatedRows);
+    cachedFound = rows.length > 0;
+
+    if (redis && rows.length > 0) {
+      try {
+        await redis.set(cacheKey, JSON.stringify(rows), "EX", 300);
+      } catch (e) {
+        console.warn("[Positions API] Redis set failed for raw rows:", e);
+      }
+    }
+
+    return rows;
+  }
+
+  // Try to get raw rows from Redis when we need the active market catalog.
+  if (includeCatalog && redis) {
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        rows = JSON.parse(cached);
+        cachedFound = true;
+        console.log(`[Positions API] Serving ${rows.length} raw rows from Redis cache`);
+      }
+    } catch (e) {
+      console.warn("[Positions API] Redis get failed for raw rows:", e);
+    }
+  }
+
+  if (includeCatalog && !cachedFound) {
+    rows = await fetchActiveCatalogRows(true);
+  }
+
   const marketsMap = new Map<string, AmmMarketRef>();
 
   for (const row of rows) {
@@ -363,22 +780,12 @@ async function fetchAmmMarketsForOnchain(historyAddresses: string[] = []): Promi
     const slug = typeof r.slug === "string" ? r.slug : undefined;
     const title = typeof r.title === "string" ? r.title : slug ?? "Unknown";
 
-    // Robust address check: address OR venue.exchange
     const venue = typeof r.venue === "object" && r.venue !== null ? (r.venue as any) : undefined;
     const address = (typeof r.address === "string" && isAddress(r.address) ? r.address : undefined)
       ?? (typeof venue?.exchange === "string" && isAddress(venue.exchange) ? venue.exchange : undefined);
 
     const rawPositionIds = r.positionIds;
     const prices = Array.isArray(r.prices) ? r.prices : [];
-
-    // Ensure 100% pricing logic
-    const rawYes = typeof prices[0] === "number" ? prices[0] : 0.5;
-    const yesPrice = rawYes > 1 ? rawYes / 100 : rawYes;
-    let noPrice = (typeof prices[1] === "number" ? (prices[1] > 1 ? prices[1] / 100 : prices[1]) : (1 - yesPrice));
-
-    if (Math.abs(yesPrice + noPrice - 1) > 0.05) {
-      noPrice = Math.max(0, 1 - yesPrice);
-    }
 
     if (!slug || !address || !Array.isArray(rawPositionIds) || rawPositionIds.length < 2) continue;
 
@@ -392,17 +799,34 @@ async function fetchAmmMarketsForOnchain(historyAddresses: string[] = []): Promi
     const noId = toDecStr(rawPositionIds[1]);
     if (!yesId || !noId) continue;
 
-    // Use contractAddress as the key because slugs are NOT unique for multi-outcome/nested markets
     const addrKey = address.toLowerCase();
     if (!marketsMap.has(addrKey)) {
       marketsMap.set(addrKey, {
-        id: slug, // Keep slug for API calls
+        id: slug,
         slug,
         title: String(title),
         contractAddress: address,
         positionIds: [yesId, noId],
-        yesPrice,
-        noPrice,
+        ...(typeof prices[0] === "number"
+          ? (() => {
+            const rawYes = prices[0];
+            const yesPrice = rawYes > 1 ? rawYes / 100 : rawYes;
+            const rawNo = typeof prices[1] === "number" ? prices[1] : 1 - yesPrice;
+            let noPrice = rawNo > 1 ? rawNo / 100 : rawNo;
+
+            if (Math.abs(yesPrice + noPrice - 1) > 0.05) {
+              noPrice = Math.max(0, 1 - yesPrice);
+            }
+
+            return { yesPrice, noPrice };
+          })()
+          : {}),
+        status: typeof r.status === "string" ? r.status : undefined,
+        expired: r.expired === true,
+        winningOutcomeIndex:
+          typeof r.winningOutcomeIndex === "number" && (r.winningOutcomeIndex === 0 || r.winningOutcomeIndex === 1)
+            ? r.winningOutcomeIndex
+            : null,
         endsAt: String(
           r.endsAt ??
           r.ends_at ??
@@ -419,21 +843,10 @@ async function fetchAmmMarketsForOnchain(historyAddresses: string[] = []): Promi
 
   const existingAddresses = new Set(Array.from(marketsMap.values()).map((m) => m.contractAddress.toLowerCase()));
 
-  console.log(`[Positions API] API markets: ${marketsMap.size}, History addresses: ${historyAddresses.length}`);
-  console.log(`[Positions API] Existing addresses sample:`, Array.from(existingAddresses).slice(0, 5));
-  console.log(`[Positions API] History addresses sample:`, historyAddresses.slice(0, 5));
-
-  let matchedFromApi = 0;
-  let addedFromHistory = 0;
-
   for (const addr of historyAddresses) {
     const addrLower = addr.toLowerCase();
-    if (existingAddresses.has(addrLower)) {
-      matchedFromApi++;
-      continue;
-    }
+    if (existingAddresses.has(addrLower)) continue;
 
-    // Check if we already added this address from history (in case history has duplicates)
     if (!marketsMap.has(addrLower)) {
       const shortAddr = `${addr.slice(0, 6)}...${addr.slice(-4)}`;
       marketsMap.set(addrLower, {
@@ -441,20 +854,62 @@ async function fetchAmmMarketsForOnchain(historyAddresses: string[] = []): Promi
         slug: addrLower,
         title: `Market ${shortAddr}`,
         contractAddress: addr,
-        yesPrice: 0.5,
-        noPrice: 0.5,
+        winningOutcomeIndex: null,
         fromHistory: true
       });
-      addedFromHistory++;
     }
   }
 
-  console.log(`[Positions API] History matched from API: ${matchedFromApi}, Added as fallback: ${addedFromHistory}`);
-
-  // Try to resolve titles for fallback entries by querying Limitless API directly
   const fallbackEntries = Array.from(marketsMap.entries()).filter(([_, m]) => m.fromHistory);
   if (fallbackEntries.length > 0) {
     await Promise.all(fallbackEntries.map(async ([key, m]) => {
+      const applyPriceSnapshot = (row: Record<string, unknown>) => {
+        const prices = Array.isArray(row.prices) ? row.prices : [];
+        const rawYes = typeof prices[0] === "number" ? prices[0] : undefined;
+        if (rawYes === undefined) return false;
+
+        const yesPrice = rawYes > 1 ? rawYes / 100 : rawYes;
+        const rawNo = typeof prices[1] === "number" ? prices[1] : 1 - yesPrice;
+        let noPrice = rawNo > 1 ? rawNo / 100 : rawNo;
+        if (Math.abs(yesPrice + noPrice - 1) > 0.05) {
+          noPrice = Math.max(0, 1 - yesPrice);
+        }
+
+        m.yesPrice = yesPrice;
+        m.noPrice = noPrice;
+        return true;
+      };
+
+      const applyMarketSnapshot = (row: Record<string, unknown>) => {
+        if (typeof row.title === "string") {
+          m.title = row.title;
+        }
+        if (typeof row.slug === "string") {
+          m.id = row.slug;
+          m.slug = row.slug;
+        }
+        if (row.endsAt || row.ends_at) {
+          m.endsAt = String(row.endsAt ?? row.ends_at);
+        }
+        if (typeof row.status === "string") {
+          m.status = row.status;
+        }
+        if (row.expired === true) {
+          m.expired = true;
+        }
+        if (row.winningOutcomeIndex === 0 || row.winningOutcomeIndex === 1) {
+          m.winningOutcomeIndex = row.winningOutcomeIndex;
+        }
+        if (Array.isArray(row.positionIds) && row.positionIds.length >= 2) {
+          const yes = String(row.positionIds[0] ?? "").trim();
+          const no = String(row.positionIds[1] ?? "").trim();
+          if (yes && no) {
+            m.positionIds = [yes, no];
+          }
+        }
+        applyPriceSnapshot(row);
+      };
+
       const endpoints = [
         `${baseUrl}/markets/${m.contractAddress}`,
         `${baseUrl}/markets/${m.contractAddress.toLowerCase()}`,
@@ -470,15 +925,89 @@ async function fetchAmmMarketsForOnchain(historyAddresses: string[] = []): Promi
           const data = await resp.json() as any;
           const market = Array.isArray(data?.data) ? data.data[0] : (data?.title ? data : null);
           if (market && typeof market.title === "string") {
-            m.title = market.title;
-            if (typeof market.slug === "string") { m.id = market.slug; m.slug = market.slug; }
-            if (market.endsAt || market.ends_at) { m.endsAt = String(market.endsAt ?? market.ends_at); }
-            console.log(`[Positions API] Resolved title for ${key}: "${market.title}"`);
+            applyMarketSnapshot(market);
             break;
           }
-        } catch { /* non-fatal */ }
+        } catch { /* ignored */ }
       }
     }));
+
+    const unresolvedEntries = fallbackEntries.filter(([_, m]) =>
+      isGenericHistoryTitle(m.title) || !hasVerifiedAmmPrice(m.yesPrice) || !hasVerifiedAmmPrice(m.noPrice)
+    );
+
+    if (unresolvedEntries.length > 0) {
+      const catalogRows = await fetchActiveCatalogRows();
+      for (const [_, m] of unresolvedEntries) {
+        const match = catalogRows.find((row) => {
+          if (!row || typeof row !== "object") return false;
+          const record = row as Record<string, unknown>;
+          const venue = typeof record.venue === "object" && record.venue !== null
+            ? record.venue as Record<string, unknown>
+            : undefined;
+          const address = (
+            (typeof record.address === "string" ? record.address : undefined) ??
+            (typeof venue?.exchange === "string" ? venue.exchange : undefined) ??
+            ""
+          ).toLowerCase();
+          const slug = typeof record.slug === "string" ? record.slug.toLowerCase() : "";
+          const id = typeof record.id === "string" || typeof record.id === "number"
+            ? String(record.id).toLowerCase()
+            : "";
+
+          return (
+            address === m.contractAddress.toLowerCase() ||
+            slug === m.slug.toLowerCase() ||
+            id === m.id.toLowerCase()
+          );
+        });
+
+        if (!match || typeof match !== "object") {
+          continue;
+        }
+
+        const record = match as Record<string, unknown>;
+        if (typeof record.title === "string") {
+          m.title = record.title;
+        }
+        if (typeof record.slug === "string") {
+          m.id = record.slug;
+          m.slug = record.slug;
+        }
+        if (record.endsAt || record.ends_at) {
+          m.endsAt = String(record.endsAt ?? record.ends_at);
+        }
+        if (typeof record.status === "string") {
+          m.status = record.status;
+        }
+        if (record.expired === true) {
+          m.expired = true;
+        }
+        if (record.winningOutcomeIndex === 0 || record.winningOutcomeIndex === 1) {
+          m.winningOutcomeIndex = record.winningOutcomeIndex;
+        }
+        if (Array.isArray(record.positionIds) && record.positionIds.length >= 2) {
+          const yes = String(record.positionIds[0] ?? "").trim();
+          const no = String(record.positionIds[1] ?? "").trim();
+          if (yes && no) {
+            m.positionIds = [yes, no];
+          }
+        }
+        const prices = Array.isArray(record.prices) ? record.prices : [];
+        const rawYes = typeof prices[0] === "number" ? prices[0] : undefined;
+        if (rawYes === undefined) {
+          continue;
+        }
+        const yesPrice = rawYes > 1 ? rawYes / 100 : rawYes;
+        const rawNo = typeof prices[1] === "number" ? prices[1] : 1 - yesPrice;
+        let noPrice = rawNo > 1 ? rawNo / 100 : rawNo;
+        if (Math.abs(yesPrice + noPrice - 1) > 0.05) {
+          noPrice = Math.max(0, 1 - yesPrice);
+        }
+        m.yesPrice = yesPrice;
+        m.noPrice = noPrice;
+      }
+    }
   }
 
   return Array.from(marketsMap.values());
@@ -490,6 +1019,360 @@ function sumDecimalStrings(values: string[]) {
     return "0";
   }
   return total.toFixed(6).replace(/\.?0+$/, "") || "0";
+}
+
+function hasPositiveDecimal(value: string | undefined) {
+  const parsed = Number(value ?? "0");
+  return Number.isFinite(parsed) && parsed > 0;
+}
+
+function hasNonZeroDecimal(value: string | undefined) {
+  const parsed = Number(value ?? "0");
+  return Number.isFinite(parsed) && parsed !== 0;
+}
+
+function hasVerifiedAmmPrice(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function isGenericHistoryTitle(title: string | undefined) {
+  if (!title) {
+    return true;
+  }
+
+  return /^Market 0x[a-f0-9]{4}\.\.\.[a-f0-9]{4}$/i.test(title.trim());
+}
+
+function isAddressLikeMarketId(value: string | undefined) {
+  return !!value && /^0x[a-f0-9]{40}$/i.test(value.trim());
+}
+
+function mergeHistoricalActionState(
+  existing: HistoricalActionState | undefined,
+  incoming: HistoricalActionState
+): HistoricalActionState {
+  const proceedsUsdc = sumDecimalStrings([existing?.proceedsUsdc ?? "0", incoming.proceedsUsdc]);
+
+  if (!existing) {
+    return {
+      ...incoming,
+      proceedsUsdc
+    };
+  }
+
+  const existingTime = existing.timestamp ? Date.parse(existing.timestamp) : Number.NaN;
+  const incomingTime = incoming.timestamp ? Date.parse(incoming.timestamp) : Number.NaN;
+  const keepExistingAction =
+    (Number.isFinite(existingTime) && Number.isFinite(incomingTime) && existingTime > incomingTime) ||
+    (!!existing.timestamp && !incoming.timestamp);
+
+  return {
+    action: keepExistingAction ? existing.action : incoming.action,
+    proceedsUsdc,
+    timestamp: keepExistingAction ? existing.timestamp : incoming.timestamp ?? existing.timestamp
+  };
+}
+
+function mergeHistoricalSettledPosition(existing: TrackedPosition, historical: TrackedPosition): TrackedPosition {
+  return {
+    ...existing,
+    status: "settled",
+    costUsdc: hasPositiveDecimal(historical.costUsdc) ? historical.costUsdc : existing.costUsdc,
+    marketValueUsdc: hasPositiveDecimal(historical.marketValueUsdc) ? historical.marketValueUsdc : existing.marketValueUsdc,
+    realizedPnlUsdc: hasNonZeroDecimal(historical.realizedPnlUsdc) ? historical.realizedPnlUsdc : existing.realizedPnlUsdc,
+    currentPrice: historical.currentPrice ?? existing.currentPrice,
+    endsAt: historical.endsAt ?? existing.endsAt,
+    claimable: existing.claimable || historical.claimable,
+    tokenBalance: hasPositiveDecimal(historical.tokenBalance) ? historical.tokenBalance : existing.tokenBalance,
+    ...(historical as any).isSold ? { isSold: true } : {}
+  };
+}
+
+function mergeCachedSettledPosition(current: TrackedPosition, cached: TrackedPosition): TrackedPosition {
+  return {
+    ...cached,
+    ...current,
+    status: "settled",
+    marketId: !isAddressLikeMarketId(current.marketId) ? current.marketId : cached.marketId,
+    marketSlug: !isAddressLikeMarketId(current.marketSlug) ? current.marketSlug : cached.marketSlug,
+    marketTitle: !isGenericHistoryTitle(current.marketTitle) ? current.marketTitle : cached.marketTitle,
+    costUsdc: hasPositiveDecimal(current.costUsdc) ? current.costUsdc : cached.costUsdc,
+    marketValueUsdc: hasPositiveDecimal(current.marketValueUsdc) ? current.marketValueUsdc : cached.marketValueUsdc,
+    realizedPnlUsdc: hasNonZeroDecimal(current.realizedPnlUsdc) ? current.realizedPnlUsdc : cached.realizedPnlUsdc,
+    currentPrice: current.currentPrice ?? cached.currentPrice,
+    endsAt: current.endsAt ?? cached.endsAt,
+    claimable: current.claimable || cached.claimable,
+    tokenBalance: hasPositiveDecimal(current.tokenBalance) ? current.tokenBalance : cached.tokenBalance,
+    ...((current as any).isSold || (cached as any).isSold ? { isSold: true } : {})
+  };
+}
+
+function isMeaningfulActivePrice(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1;
+}
+
+function mergeCachedActivePosition(current: TrackedPosition, cached: TrackedPosition): TrackedPosition {
+  const currentHasValue = hasPositiveDecimal(current.marketValueUsdc);
+  const currentHasBalance = hasPositiveDecimal(current.tokenBalance);
+  const currentHasVerifiedPricing = current.hasVerifiedPricing === true;
+  const cachedHasVerifiedPricing = cached.hasVerifiedPricing === true;
+
+  return {
+    ...cached,
+    ...current,
+    status: "active",
+    marketId: !isAddressLikeMarketId(current.marketId) ? current.marketId : cached.marketId,
+    marketSlug: !isAddressLikeMarketId(current.marketSlug) ? current.marketSlug : cached.marketSlug,
+    marketTitle: !isGenericHistoryTitle(current.marketTitle) ? current.marketTitle : cached.marketTitle,
+    costUsdc: hasPositiveDecimal(current.costUsdc) ? current.costUsdc : cached.costUsdc,
+    tokenBalance: currentHasBalance ? current.tokenBalance : cached.tokenBalance,
+    marketValueUsdc:
+      currentHasVerifiedPricing && currentHasValue
+        ? current.marketValueUsdc
+        : (cachedHasVerifiedPricing ? cached.marketValueUsdc : current.marketValueUsdc),
+    unrealizedPnlUsdc:
+      currentHasVerifiedPricing && currentHasValue
+        ? current.unrealizedPnlUsdc
+        : (cachedHasVerifiedPricing ? cached.unrealizedPnlUsdc : current.unrealizedPnlUsdc),
+    currentPrice:
+      currentHasVerifiedPricing && isMeaningfulActivePrice(current.currentPrice)
+        ? current.currentPrice
+        : (cachedHasVerifiedPricing && isMeaningfulActivePrice(cached.currentPrice) ? cached.currentPrice : current.currentPrice),
+    hasVerifiedPricing: currentHasVerifiedPricing || cachedHasVerifiedPricing,
+    endsAt: current.endsAt ?? cached.endsAt
+  };
+}
+
+function shouldHydrateCachedActiveSnapshot(
+  snapshot: PortfolioPositionsSnapshot,
+  cachedSnapshot: PortfolioPositionsSnapshot
+) {
+  const currentActiveCount = snapshot.active.length;
+  const cachedActiveCount = cachedSnapshot.active.length;
+  if (cachedActiveCount === 0) {
+    return false;
+  }
+
+  if (currentActiveCount === 0) {
+    return true;
+  }
+
+  const currentValue = Number(snapshot.totals.activeMarketValueUsdc);
+  const cachedValue = Number(cachedSnapshot.totals.activeMarketValueUsdc);
+  if (!Number.isFinite(currentValue) || !Number.isFinite(cachedValue) || cachedValue <= 0) {
+    return false;
+  }
+
+  return currentActiveCount < cachedActiveCount && currentValue < cachedValue * ACTIVE_SNAPSHOT_VALUE_DROP_RATIO;
+}
+
+function shouldRefreshSnapshotCache(
+  snapshot: PortfolioPositionsSnapshot,
+  cachedSnapshot: PortfolioPositionsSnapshot | null
+) {
+  if (!cachedSnapshot) {
+    return true;
+  }
+
+  const currentActiveValue = Number(snapshot.totals.activeMarketValueUsdc);
+  const cachedActiveValue = Number(cachedSnapshot.totals.activeMarketValueUsdc);
+
+  if (snapshot.active.length === 0 && cachedSnapshot.active.length > 0) {
+    return false;
+  }
+
+  if (
+    snapshot.active.length < cachedSnapshot.active.length &&
+    Number.isFinite(currentActiveValue) &&
+    Number.isFinite(cachedActiveValue) &&
+    cachedActiveValue > 0 &&
+    currentActiveValue < cachedActiveValue * ACTIVE_SNAPSHOT_VALUE_DROP_RATIO
+  ) {
+    return false;
+  }
+
+  if (
+    snapshot.settled.length < cachedSnapshot.settled.length &&
+    cachedSnapshot.settled.length > 0 &&
+    snapshot.settled.length <= Math.floor(cachedSnapshot.settled.length * SETTLED_SNAPSHOT_COUNT_DROP_RATIO)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+type SnapshotCacheRecord = {
+  snapshot: PortfolioPositionsSnapshot;
+  expiresAt: number;
+};
+
+function getSnapshotMemoryCache() {
+  const globalState = globalThis as typeof globalThis & {
+    __pmMiniappPositionsSnapshotCache?: Map<string, SnapshotCacheRecord>;
+  };
+
+  if (!globalState.__pmMiniappPositionsSnapshotCache) {
+    globalState.__pmMiniappPositionsSnapshotCache = new Map();
+  }
+
+  return globalState.__pmMiniappPositionsSnapshotCache;
+}
+
+async function readCachedPositionsSnapshot(
+  account: string,
+  redis: Awaited<ReturnType<typeof getSecurityRedisClient>> | null
+) {
+  const normalizedAccount = account.toLowerCase();
+  const cacheKey = `pm-miniapp:positions-snapshot:${normalizedAccount}`;
+
+  if (redis) {
+    try {
+      const raw = await redis.get(cacheKey);
+      if (raw) {
+        return JSON.parse(raw) as PortfolioPositionsSnapshot;
+      }
+    } catch (error) {
+      console.warn("[Positions API] Snapshot cache read failed:", error);
+    }
+  }
+
+  const memoryCache = getSnapshotMemoryCache();
+  const record = memoryCache.get(cacheKey);
+  if (!record) {
+    return null;
+  }
+
+  if (record.expiresAt <= Date.now()) {
+    memoryCache.delete(cacheKey);
+    return null;
+  }
+
+  return record.snapshot;
+}
+
+async function writeCachedPositionsSnapshot(
+  account: string,
+  snapshot: PortfolioPositionsSnapshot,
+  redis: Awaited<ReturnType<typeof getSecurityRedisClient>> | null
+) {
+  const normalizedAccount = account.toLowerCase();
+  const cacheKey = `pm-miniapp:positions-snapshot:${normalizedAccount}`;
+
+  if (redis) {
+    try {
+      await redis.set(cacheKey, JSON.stringify(snapshot), "EX", SNAPSHOT_CACHE_TTL_SECONDS);
+    } catch (error) {
+      console.warn("[Positions API] Snapshot cache write failed:", error);
+    }
+  }
+
+  getSnapshotMemoryCache().set(cacheKey, {
+    snapshot,
+    expiresAt: Date.now() + SNAPSHOT_CACHE_TTL_SECONDS * 1000
+  });
+}
+
+function stabilizeSnapshotWithCache(
+  snapshot: PortfolioPositionsSnapshot,
+  cachedSnapshot: PortfolioPositionsSnapshot | null
+) {
+  if (!cachedSnapshot) {
+    return snapshot;
+  }
+
+  const active = [...snapshot.active];
+  const activeIndexByKey = new Map<string, number>();
+  active.forEach((position, index) => {
+    for (const key of buildPositionLookupKeys(position)) {
+      activeIndexByKey.set(key, index);
+    }
+  });
+
+  const shouldHydrateCachedActive = shouldHydrateCachedActiveSnapshot(snapshot, cachedSnapshot);
+  const activeKeys = new Set<string>();
+  active.forEach((position) => {
+    for (const key of buildPositionLookupKeys(position)) {
+      activeKeys.add(key);
+    }
+  });
+
+  const settled = [...snapshot.settled];
+  const settledIndexByKey = new Map<string, number>();
+  settled.forEach((position, index) => {
+    for (const key of buildPositionLookupKeys(position)) {
+      settledIndexByKey.set(key, index);
+    }
+  });
+
+  for (const cachedPosition of cachedSnapshot.active) {
+    const keys = buildPositionLookupKeys(cachedPosition);
+    if (keys.some((key) => settledIndexByKey.has(key))) {
+      continue;
+    }
+
+    const existingKey = keys.find((key) => activeIndexByKey.has(key));
+    if (existingKey) {
+      const index = activeIndexByKey.get(existingKey)!;
+      active[index] = mergeCachedActivePosition(active[index], cachedPosition);
+      for (const mergedKey of buildPositionLookupKeys(active[index])) {
+        activeIndexByKey.set(mergedKey, index);
+        activeKeys.add(mergedKey);
+      }
+      continue;
+    }
+
+    if (!shouldHydrateCachedActive) {
+      continue;
+    }
+
+    const index = active.push(cachedPosition) - 1;
+    keys.forEach((key) => {
+      activeIndexByKey.set(key, index);
+      activeKeys.add(key);
+    });
+  }
+
+  for (const cachedPosition of cachedSnapshot.settled) {
+    const keys = buildPositionLookupKeys(cachedPosition);
+    if (keys.some((key) => activeKeys.has(key))) {
+      continue;
+    }
+
+    const existingKey = keys.find((key) => settledIndexByKey.has(key));
+    if (existingKey) {
+      const index = settledIndexByKey.get(existingKey)!;
+      settled[index] = mergeCachedSettledPosition(settled[index], cachedPosition);
+      for (const mergedKey of buildPositionLookupKeys(settled[index])) {
+        settledIndexByKey.set(mergedKey, index);
+      }
+      continue;
+    }
+
+    const index = settled.push(cachedPosition) - 1;
+    keys.forEach((key) => settledIndexByKey.set(key, index));
+  }
+
+  const prunedSettled = prunePlaceholderSettledPositions(settled);
+  return {
+    ...snapshot,
+    active,
+    settled: prunedSettled,
+    totals: recomputeTotals(active, prunedSettled)
+  };
+}
+
+function getSnapshotAgeMs(snapshot: PortfolioPositionsSnapshot | null) {
+  if (!snapshot?.fetchedAt) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const fetchedAt = Date.parse(snapshot.fetchedAt);
+  if (!Number.isFinite(fetchedAt)) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return Math.max(0, Date.now() - fetchedAt);
 }
 
 function formatDecimalString(value: number) {
@@ -524,6 +1407,369 @@ function recomputeTotals(
     activeMarketValueUsdc: sumDecimalStrings(active.map((item) => item.marketValueUsdc)),
     unrealizedPnlUsdc: sumDecimalStrings(active.map((item) => item.unrealizedPnlUsdc)),
     claimableUsdc: sumDecimalStrings(settled.filter((item) => item.claimable).map((item) => item.marketValueUsdc))
+  };
+}
+
+function prunePlaceholderSettledPositions(settled: TrackedPosition[]) {
+  return settled.filter((position) => {
+    if (position.claimable || (position as any).isSold) {
+      return true;
+    }
+
+    const cost = Number(position.costUsdc);
+    const value = Number(position.marketValueUsdc);
+    const balance = Number(position.tokenBalance);
+    const realized = Number(position.realizedPnlUsdc);
+    const unrealized = Number(position.unrealizedPnlUsdc);
+
+    return !(cost === 0 && value === 0 && balance === 0 && realized === 0 && unrealized === 0);
+  });
+}
+
+function recordLatestActivity(
+  activityByKey: Map<string, number>,
+  market: AmmMarketRef,
+  side: PositionSide,
+  timestamp?: string
+) {
+  if (!timestamp) {
+    return;
+  }
+
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) {
+    return;
+  }
+
+  const keys = [
+    `${market.contractAddress.toLowerCase()}:${side}`,
+    `${market.id.toLowerCase()}:${side}`,
+    `${market.slug.toLowerCase()}:${side}`
+  ];
+
+  for (const key of keys) {
+    const existing = activityByKey.get(key) ?? 0;
+    if (parsed > existing) {
+      activityByKey.set(key, parsed);
+    }
+  }
+}
+
+function buildLatestActivityByKey(
+  historySummary: TransferHistorySummary,
+  ammMarkets: AmmMarketRef[]
+) {
+  const marketByAddress = new Map<string, AmmMarketRef>();
+  for (const market of ammMarkets) {
+    marketByAddress.set(market.contractAddress.toLowerCase(), market);
+  }
+
+  const activityByKey = new Map<string, number>();
+
+  for (const token of historySummary.inboundPositionTokens) {
+    const market = marketByAddress.get(token.contractAddress.toLowerCase());
+    if (!market) continue;
+
+    const side = resolveMarketSideFromTokenId(market, token.tokenId, historySummary.tokenSideMap);
+    if (!side) continue;
+
+    recordLatestActivity(activityByKey, market, side, token.timestamp);
+  }
+
+  for (const action of historySummary.marketActions) {
+    const contractAddress = action.contractAddress.trim().toLowerCase();
+
+    if (contractAddress) {
+      const market = marketByAddress.get(contractAddress);
+      if (!market) continue;
+
+      const side = resolveMarketSideFromTokenId(market, action.tokenId, historySummary.tokenSideMap);
+      if (!side) continue;
+
+      recordLatestActivity(activityByKey, market, side, action.timestamp);
+      continue;
+    }
+
+    for (const market of marketByAddress.values()) {
+      const side = resolveMarketSideFromTokenId(market, action.tokenId, historySummary.tokenSideMap);
+      if (!side) continue;
+
+      recordLatestActivity(activityByKey, market, side, action.timestamp);
+      break;
+    }
+  }
+
+  return activityByKey;
+}
+
+function sortSnapshotActivePositions(
+  snapshot: PortfolioPositionsSnapshot | null,
+  historySummary: TransferHistorySummary,
+  ammMarkets: AmmMarketRef[]
+) {
+  if (!snapshot || snapshot.active.length <= 1) {
+    return snapshot;
+  }
+
+  const activityByKey = buildLatestActivityByKey(historySummary, ammMarkets);
+  const active = snapshot.active
+    .map((position, index) => {
+      const latestActivity = buildPositionLookupKeys(position)
+        .map((key) => activityByKey.get(key) ?? 0)
+        .reduce((max, value) => Math.max(max, value), 0);
+
+      return { position, index, latestActivity };
+    })
+    .sort((left, right) => {
+      if (right.latestActivity !== left.latestActivity) {
+        return right.latestActivity - left.latestActivity;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.position);
+
+  return {
+    ...snapshot,
+    active
+  };
+}
+
+function resolveMarketSideFromTokenId(
+  market: AmmMarketRef | undefined,
+  tokenId: string,
+  tokenSideMap?: Record<string, PositionSide>
+) {
+  const contractAddress = market?.contractAddress?.toLowerCase();
+  if (contractAddress && tokenSideMap) {
+    const mappedSide = tokenSideMap[`${contractAddress}:${tokenId}`];
+    if (mappedSide === "yes" || mappedSide === "no") {
+      return mappedSide;
+    }
+  }
+
+  if (!market?.positionIds) {
+    return null;
+  }
+
+  if (market.positionIds[0] === tokenId) {
+    return "yes" as const;
+  }
+  if (market.positionIds[1] === tokenId) {
+    return "no" as const;
+  }
+
+  return null;
+}
+
+function buildHistoricalSettledPositions(
+  historySummary: TransferHistorySummary,
+  ammMarkets: AmmMarketRef[],
+  existingSnapshot: PortfolioPositionsSnapshot | null
+) {
+  const marketByAddress = new Map<string, AmmMarketRef>();
+  for (const market of ammMarkets) {
+    marketByAddress.set(market.contractAddress.toLowerCase(), market);
+  }
+
+  const existingActiveKeys = new Set<string>();
+  for (const position of existingSnapshot?.active ?? []) {
+    for (const key of buildPositionLookupKeys(position)) {
+      existingActiveKeys.add(key);
+    }
+  }
+
+  const actionsByKey = new Map<string, HistoricalActionState>();
+  for (const action of historySummary.marketActions) {
+    const contractAddress = action.contractAddress.trim().toLowerCase();
+    const incomingAction: HistoricalActionState = {
+      action: action.action,
+      proceedsUsdc: action.proceedsUsdc ?? "0",
+      timestamp: action.timestamp
+    };
+
+    if (contractAddress) {
+      const market = marketByAddress.get(contractAddress);
+      const side = resolveMarketSideFromTokenId(market, action.tokenId, historySummary.tokenSideMap);
+      if (side) {
+        const key = `${contractAddress}:${side}`;
+        actionsByKey.set(key, mergeHistoricalActionState(actionsByKey.get(key), incomingAction));
+      }
+      continue;
+    }
+
+    for (const [marketAddress, market] of marketByAddress.entries()) {
+      const side = resolveMarketSideFromTokenId(market, action.tokenId, historySummary.tokenSideMap);
+      if (side) {
+        const key = `${marketAddress}:${side}`;
+        actionsByKey.set(key, mergeHistoricalActionState(actionsByKey.get(key), incomingAction));
+        break;
+      }
+    }
+  }
+
+  const keys = new Set<string>([
+    ...Object.keys(historySummary.costBasisMap),
+    ...actionsByKey.keys()
+  ]);
+
+  for (const token of historySummary.inboundPositionTokens) {
+    const market = marketByAddress.get(token.contractAddress);
+    const side = resolveMarketSideFromTokenId(market, token.tokenId, historySummary.tokenSideMap);
+    if (side) {
+      keys.add(`${token.contractAddress}:${side}`);
+    }
+  }
+
+  const positions = new Map<string, TrackedPosition>();
+
+  for (const key of keys) {
+    const separator = key.lastIndexOf(":");
+    if (separator <= 0) continue;
+
+    const contractAddress = key.slice(0, separator);
+    const side = key.slice(separator + 1) as PositionSide;
+    if (side !== "yes" && side !== "no") continue;
+
+    const market = marketByAddress.get(contractAddress);
+    if (!market) continue;
+
+    const existingLookupKeys = [
+      `${contractAddress}:${side}`,
+      `${market.id.toLowerCase()}:${side}`,
+      `${market.slug.toLowerCase()}:${side}`
+    ];
+    if (existingLookupKeys.some((lookupKey) => existingActiveKeys.has(lookupKey))) {
+      continue;
+    }
+
+    const actionMeta = actionsByKey.get(`${contractAddress}:${side}`);
+    const action = actionMeta?.action;
+    const proceedsUsdc = actionMeta?.proceedsUsdc ?? "0";
+    const costBasis = historySummary.costBasisMap[key];
+    const costUsdc = costBasis?.costUsdc ?? "0";
+    const shares = costBasis?.tokenAmount ?? "0";
+    const isResolved = market.expired === true || market.status?.toLowerCase().includes("resolved") === true;
+    const isClosedHistoryCandidate = isResolved || action === "sell" || action === "redeem";
+    if (!isClosedHistoryCandidate) {
+      continue;
+    }
+
+    const winningSide =
+      market.winningOutcomeIndex === 0 ? "yes" :
+      market.winningOutcomeIndex === 1 ? "no" :
+      null;
+    const isWinner = winningSide === side;
+    const isRedeemed = action === "redeem" && isResolved && isWinner;
+    const isSold = action === "sell";
+
+    let currentPrice: number | undefined;
+    let marketValueUsdc = "0";
+    let realizedPnlUsdc = "0";
+
+    if (isRedeemed) {
+      currentPrice = 1;
+      marketValueUsdc = hasPositiveDecimal(proceedsUsdc) ? proceedsUsdc : shares;
+      if (hasPositiveDecimal(costUsdc) && hasPositiveDecimal(marketValueUsdc)) {
+        realizedPnlUsdc = formatDecimalString(Number(marketValueUsdc) - Number(costUsdc));
+      }
+    } else if (isResolved && winningSide) {
+      currentPrice = isWinner ? 1 : 0;
+      if (isWinner && hasPositiveDecimal(proceedsUsdc) && hasPositiveDecimal(costUsdc)) {
+        marketValueUsdc = proceedsUsdc;
+        realizedPnlUsdc = formatDecimalString(Number(proceedsUsdc) - Number(costUsdc));
+      }
+      if (!isWinner && Number(costUsdc) > 0) {
+        realizedPnlUsdc = formatDecimalString(-Number(costUsdc));
+      }
+    } else if (isSold) {
+      currentPrice = side === "yes" ? market.yesPrice : market.noPrice;
+      if (hasPositiveDecimal(proceedsUsdc)) {
+        marketValueUsdc = proceedsUsdc;
+        if (hasPositiveDecimal(costUsdc)) {
+          realizedPnlUsdc = formatDecimalString(Number(proceedsUsdc) - Number(costUsdc));
+        }
+      }
+    }
+
+    const positionId = `${market.id}:${side}`;
+    if (!positions.has(positionId)) {
+      positions.set(positionId, {
+        id: positionId,
+        marketId: market.id,
+        marketSlug: market.slug,
+        marketTitle: market.title,
+        side,
+        status: "settled",
+        costUsdc,
+        marketValueUsdc,
+        unrealizedPnlUsdc: "0",
+        realizedPnlUsdc,
+        claimable: false,
+        tokenBalance: "0",
+        currentPrice,
+        endsAt: market.endsAt,
+        isSold
+      });
+    }
+  }
+
+  return Array.from(positions.values());
+}
+
+function mergeHistoricalSettledPositions(
+  snapshot: PortfolioPositionsSnapshot | null,
+  account: `0x${string}`,
+  historicalSettled: TrackedPosition[]
+) {
+  if (historicalSettled.length === 0) {
+    return snapshot;
+  }
+
+  const active = snapshot?.active ?? [];
+  const settled = [...(snapshot?.settled ?? [])];
+  const activeKeys = new Set<string>();
+  const settledIndexByKey = new Map<string, number>();
+
+  active.forEach((position) => {
+    for (const key of buildPositionLookupKeys(position)) {
+      activeKeys.add(key);
+    }
+  });
+
+  settled.forEach((position, index) => {
+    for (const key of buildPositionLookupKeys(position)) {
+      settledIndexByKey.set(key, index);
+    }
+  });
+
+  for (const position of historicalSettled) {
+    const keys = buildPositionLookupKeys(position);
+    if (keys.some((key) => activeKeys.has(key))) {
+      continue;
+    }
+
+    const existingSettledKey = keys.find((key) => settledIndexByKey.has(key));
+    if (existingSettledKey) {
+      const index = settledIndexByKey.get(existingSettledKey)!;
+      settled[index] = mergeHistoricalSettledPosition(settled[index], position);
+      for (const mergedKey of buildPositionLookupKeys(settled[index])) {
+        settledIndexByKey.set(mergedKey, index);
+      }
+      continue;
+    }
+
+    const index = settled.push(position) - 1;
+    keys.forEach((key) => settledIndexByKey.set(key, index));
+  }
+
+  const prunedSettled = prunePlaceholderSettledPositions(settled);
+
+  return {
+    account: snapshot?.account ?? account,
+    fetchedAt: new Date().toISOString(),
+    active,
+    settled: prunedSettled,
+    totals: recomputeTotals(active, prunedSettled)
   };
 }
 
@@ -570,6 +1816,9 @@ function enrichPublicPortfolioSnapshotWithMarketPrices(
     }
 
     const currentPrice = position.side === "yes" ? market.yesPrice : market.noPrice;
+    if (!hasVerifiedAmmPrice(currentPrice)) {
+      return position;
+    }
     const marketValue = shares * currentPrice;
     const pnl = marketValue - cost;
 
@@ -580,7 +1829,8 @@ function enrichPublicPortfolioSnapshotWithMarketPrices(
       marketTitle: position.marketTitle || market.title,
       marketValueUsdc: formatDecimalString(marketValue),
       unrealizedPnlUsdc: formatDecimalString(pnl),
-      currentPrice
+      currentPrice,
+      hasVerifiedPricing: true
     };
   };
 
@@ -647,12 +1897,14 @@ function mergePortfolioSnapshots(
     }
   }
 
+  const prunedSettled = prunePlaceholderSettledPositions(settled);
+
   return {
     account: publicPortfolio.account ?? onchainSnapshot.account ?? account,
     fetchedAt: new Date().toISOString(),
     active,
-    settled,
-    totals: recomputeTotals(active, settled)
+    settled: prunedSettled,
+    totals: recomputeTotals(active, prunedSettled)
   };
 }
 
@@ -678,6 +1930,7 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const account = url.searchParams.get("account")?.trim() ?? "";
+  const forceFresh = url.searchParams.get("fresh") === "1";
 
   if (!isAddress(account)) {
     return Response.json(
@@ -685,6 +1938,29 @@ export async function GET(request: Request) {
       { status: 400, headers }
     );
   }
+
+  let snapshotCacheClient: Awaited<ReturnType<typeof getSecurityRedisClient>> | null = null;
+  try {
+    snapshotCacheClient = await getSecurityRedisClient();
+  } catch (error) {
+    console.warn("[Positions API] Snapshot cache client init failed:", error);
+  }
+
+  const cachedSnapshot = await readCachedPositionsSnapshot(account, snapshotCacheClient);
+  const cachedSnapshotAgeMs = getSnapshotAgeMs(cachedSnapshot);
+
+  if (!forceFresh && cachedSnapshot && cachedSnapshotAgeMs <= FAST_SNAPSHOT_MAX_AGE_MS) {
+    headers.set("X-Positions-Cache", "fast-hit");
+    return Response.json(cachedSnapshot, { headers });
+  }
+
+  const respondWithSnapshot = async (snapshot: PortfolioPositionsSnapshot) => {
+    const stabilizedSnapshot = stabilizeSnapshotWithCache(snapshot, cachedSnapshot);
+    if (shouldRefreshSnapshotCache(snapshot, cachedSnapshot)) {
+      await writeCachedPositionsSnapshot(account, stabilizedSnapshot, snapshotCacheClient);
+    }
+    return Response.json(stabilizedSnapshot, { headers });
+  };
 
   try {
     const authHeaders: Record<string, string> = {};
@@ -708,8 +1984,16 @@ export async function GET(request: Request) {
       publicPortfolioPromise,
       historySummaryPromise
     ]);
-    const ammMarkets = await fetchAmmMarketsForOnchain(historySummary.fpmmAddresses);
+    const hasPublicPositions =
+      rawPublicPortfolio !== null &&
+      (rawPublicPortfolio.active.length > 0 || rawPublicPortfolio.settled.length > 0);
+    const shouldFetchOnchain = !hasPublicPositions || historySummary.fpmmAddresses.length > 0;
+    const shouldIncludeCatalog = !hasPublicPositions && historySummary.fpmmAddresses.length === 0;
+    const ammMarkets = shouldFetchOnchain
+      ? await fetchAmmMarketsForOnchain(historySummary.fpmmAddresses, shouldIncludeCatalog)
+      : [];
     const publicPortfolio = enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, ammMarkets);
+    const historicalSettled = buildHistoricalSettledPositions(historySummary, ammMarkets, publicPortfolio);
 
     // 3. Create cost basis map keyed as `${marketId}:${side}`.
     // Public portfolio data is exact and should win; history-derived cost is fallback.
@@ -718,12 +2002,25 @@ export async function GET(request: Request) {
       for (const pos of [...publicPortfolio.active, ...publicPortfolio.settled]) {
         // Limitless API often uses the lowercased address or slug as marketId
         // we'll store multiple variations to maximize match rate
+        // ONLY use the API cost if it's valid and non-zero. 
+        // If it's zero, we want the blockchain history to provide the true cost.
+        if (Number(pos.costUsdc) <= 0) continue;
+
         const entry = {
           costUsdc: pos.costUsdc,
           tokenAmount: pos.status === "active" ? pos.tokenBalance : undefined
         };
         costBasisMap[`${pos.marketId.toLowerCase()}:${pos.side}`] = entry;
         costBasisMap[`${pos.marketSlug.toLowerCase()}:${pos.side}`] = entry;
+
+        // ALSO map by contract address if we can find it in the markets map
+        const match = ammMarkets.find(m =>
+          m.id.toLowerCase() === pos.marketId.toLowerCase() ||
+          m.slug.toLowerCase() === pos.marketSlug.toLowerCase()
+        );
+        if (match) {
+          costBasisMap[`${match.contractAddress.toLowerCase()}:${pos.side}`] = entry;
+        }
       }
     }
 
@@ -738,12 +2035,52 @@ export async function GET(request: Request) {
     console.log(`[Positions API] Cost basis keys:`, Object.keys(costBasisMap).slice(0, 10));
     console.log(`[Positions API] Cost basis sample:`, JSON.stringify(Object.entries(costBasisMap).slice(0, 5)));
 
-    // 4. Read ERC-1155 balances directly from Base, passing in the cost map
-    const onchainSnapshot = await fetchOnchainAmmPositions(
-      account as `0x${string}`,
-      ammMarkets,
-      costBasisMap
-    );
+    if (!shouldFetchOnchain) {
+      const snapshot = sortSnapshotActivePositions(
+        mergeHistoricalSettledPositions(publicPortfolio, account as `0x${string}`, historicalSettled),
+        historySummary,
+        ammMarkets
+      );
+      return respondWithSnapshot(snapshot);
+    }
+
+    let onchainSnapshot: PortfolioPositionsSnapshot | null = null;
+    try {
+      // 4. Read ERC-1155 balances directly from Base, passing in the cost map.
+      // This layer is best-effort; if Base RPC stalls we still want to return the
+      // public Limitless portfolio instead of leaving the profile page empty.
+      onchainSnapshot = await withTimeout(
+        fetchOnchainAmmPositions(
+          account as `0x${string}`,
+          ammMarkets,
+          costBasisMap
+        ),
+        ONCHAIN_ENRICH_TIMEOUT_MS,
+        "On-chain portfolio enrichment"
+      );
+    } catch (error) {
+      console.warn("[Positions API] On-chain enrichment failed:", error);
+      if (publicPortfolio) {
+        const snapshot = sortSnapshotActivePositions(
+          mergeHistoricalSettledPositions(publicPortfolio, account as `0x${string}`, historicalSettled),
+          historySummary,
+          ammMarkets
+        );
+        return respondWithSnapshot(snapshot);
+      }
+      const fallbackSnapshot = sortSnapshotActivePositions(
+        mergeHistoricalSettledPositions(null, account as `0x${string}`, historicalSettled) ?? {
+          account: account as `0x${string}`,
+          fetchedAt: new Date().toISOString(),
+          active: [],
+          settled: historicalSettled,
+          totals: recomputeTotals([], historicalSettled)
+        },
+        historySummary,
+        ammMarkets
+      );
+      return respondWithSnapshot(fallbackSnapshot);
+    }
 
     console.log(`[Positions API] Discovered ${ammMarkets.length} candidate markets. Found ${onchainSnapshot.active.length} active and ${onchainSnapshot.settled.length} settled positions for ${account}`);
     // Debug: show PNL values
@@ -756,11 +2093,23 @@ export async function GET(request: Request) {
       publicPortfolio,
       onchainSnapshot
     );
+    const finalSnapshot = sortSnapshotActivePositions(
+      mergeHistoricalSettledPositions(
+        mergedSnapshot,
+        account as `0x${string}`,
+        historicalSettled
+      ),
+      historySummary,
+      ammMarkets
+    );
 
-    console.log(`[Positions API] Returning ${mergedSnapshot.active.length} active and ${mergedSnapshot.settled.length} settled positions for ${account}`);
+    console.log(`[Positions API] Returning ${finalSnapshot?.active.length ?? 0} active and ${finalSnapshot?.settled.length ?? 0} settled positions for ${account}`);
 
-    return Response.json(mergedSnapshot, { headers });
+    return respondWithSnapshot(finalSnapshot);
   } catch (error) {
+    if (cachedSnapshot) {
+      return Response.json(cachedSnapshot, { headers });
+    }
     const message =
       error instanceof Error ? error.message : "Portfolio positions lookup failed";
     return Response.json(

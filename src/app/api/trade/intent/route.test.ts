@@ -75,6 +75,9 @@ beforeEach(() => {
                 unrealizedPnl: "0",
                 realisedPnl: "0"
               }
+            },
+            tokensBalance: {
+              yes: "7000000"
             }
           }
         ]
@@ -142,4 +145,22 @@ test("sell action clamps amountUsdc to active position market value", { concurre
   assert.equal(body.meta?.action, "sell");
   assert.equal(body.meta?.amountUsdc, "5");
   assert.equal(body.meta?.amountUnits, "5000000");
+});
+
+test("sell action does not fall back to an arbitrary position with the same side", { concurrency: false }, async () => {
+  const request = buildRequest({
+    action: "sell",
+    marketId: "eth-up",
+    side: "yes",
+    amountUsdc: "1",
+    expectedPrice: 0.61,
+    maxSlippageBps: 200,
+    walletAddress: TEST_WALLET
+  });
+
+  const response = await POST(request);
+  const body = (await response.json()) as { error?: string };
+
+  assert.equal(response.status, 409);
+  assert.equal(body.error, "No active position found for this market/side.");
 });

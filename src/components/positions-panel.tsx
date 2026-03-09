@@ -1,6 +1,7 @@
 "use client";
 
 import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
+import { filterVisibleActivePositions } from "@/lib/portfolio/visible-active-positions";
 import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
 import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -24,6 +25,10 @@ function formatUsd(raw: string | number) {
   }).format(value);
 }
 
+function formatOptionalUsd(raw: string | number, enabled: boolean) {
+  return enabled ? formatUsd(raw) : "--";
+}
+
 function parseProbability(value: unknown) {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) {
@@ -31,6 +36,11 @@ function parseProbability(value: unknown) {
   }
 
   return parsed;
+}
+
+function buildFeedHref(marketId: string) {
+  const params = new URLSearchParams({ startAt: marketId });
+  return `/feed?${params.toString()}`;
 }
 
 async function resolveSellExpectedPrice(position: ActivePosition) {
@@ -67,7 +77,10 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     return () => { window.removeEventListener(REFRESH_EVENT_NAME, onRefresh); };
   }, [account, isAuthenticated, refetch]);
 
-  const activePositions = useMemo(() => snapshot?.active ?? [], [snapshot?.active]);
+  const activePositions = useMemo(
+    () => filterVisibleActivePositions(snapshot?.active ?? []),
+    [snapshot?.active]
+  );
   const closedPositions = useMemo(() => snapshot?.settled.filter((item) => !item.claimable) ?? [], [snapshot?.settled]);
   const claimableSettledPositions = useMemo(() => snapshot?.settled.filter((item) => item.claimable) ?? [], [snapshot?.settled]);
 
@@ -141,6 +154,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
             const prob = parseProbability(position.currentPrice);
             const probText = prob ? `${(prob * 100).toFixed(1)}%` : "--";
             const isRedPnL = Number(position.unrealizedPnlUsdc) < 0;
+            const hasVerifiedPricing = position.hasVerifiedPricing === true;
 
             return (
               <div
@@ -148,7 +162,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
                 id={`market-${position.marketId}`}
                 className="positionDetailCard"
                 style={{ cursor: 'pointer' }}
-                onClick={() => router.push(`/feed?startAt=${position.marketSlug || position.marketId}`)}
+                onClick={() => router.push(buildFeedHref(position.marketSlug || position.marketId))}
               >
                 <div className="posContent">
                   <header className="posHeader">
@@ -165,12 +179,12 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
                     <div className="statRow">
                       <div className="statBox">
                         <span className="posLabel">Worth</span>
-                        <span className="posVal valGreen">{formatUsd(position.marketValueUsdc)}</span>
+                        <span className="posVal valGreen">{formatOptionalUsd(position.marketValueUsdc, hasVerifiedPricing)}</span>
                       </div>
                       <div className="statBox">
                         <span className="posLabel">PNL</span>
                         <span className={`posVal ${isRedPnL ? 'valRed' : 'valGreen'}`}>
-                          {isRedPnL ? '' : '+'}{formatUsd(position.unrealizedPnlUsdc)}
+                          {hasVerifiedPricing ? `${isRedPnL ? '' : '+'}${formatUsd(position.unrealizedPnlUsdc)}` : "--"}
                         </span>
                       </div>
                     </div>
@@ -296,7 +310,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
             );
           })
         ) : (
-          <p style={{ opacity: 0.6, fontSize: '13px', padding: '12px 4px' }}>No closed positions.</p>
+          <p style={{ opacity: 0.6, fontSize: '13px', padding: '12px 4px' }}>No history yet.</p>
         )}
       </section>
     );
@@ -369,5 +383,3 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     </section>
   );
 }
-
-

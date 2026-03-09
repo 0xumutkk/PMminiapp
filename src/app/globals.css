@@ -312,22 +312,22 @@ body {
 
 .market-card__veil {
   position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 351px;
+  inset: 0;
   pointer-events: none;
   z-index: 1;
 
-  /* Progressive Backdrop Blur - Simplified for Android compatibility */
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  /* Lighter Black Gradient - Dense but not full black at the very bottom */
+  background: linear-gradient(to top,
+      rgba(0, 0, 0, 0.85) 0%,
+      rgba(0, 0, 0, 0.6) 25%,
+      rgba(0, 0, 0, 0.2) 50%,
+      rgba(0, 0, 0, 0) 75%);
 
-  /* Black Gradient as specified in Figma */
-  background: linear-gradient(to bottom,
-      rgba(0, 0, 0, 0) 0%,
-      rgba(0, 0, 0, 0.4) 30%,
-      rgba(0, 0, 0, 1) 100%);
+  /* Softened progressive blur for better visual balance */
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  mask-image: linear-gradient(to top, black 0%, black 25%, transparent 65%);
+  -webkit-mask-image: linear-gradient(to top, black 0%, black 25%, transparent 65%);
 }
 
 .market-card__top-controls {
@@ -1528,7 +1528,7 @@ body {
 }
 
 .market-browser {
-  padding-top: 96px !important;
+  padding-top: 84px !important;
   background-color: var(--surface-black-primary);
   min-height: 100%;
 }
@@ -1543,7 +1543,7 @@ body {
   align-items: center;
   padding: 0 16px;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   position: relative;
 }
 
@@ -1571,10 +1571,10 @@ body {
 .explore-categories {
   display: flex;
   gap: 8px;
-  padding: 4px 0;
+  padding: 0;
   overflow-x: auto;
   scrollbar-width: none;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
 }
 
 .explore-categories::-webkit-scrollbar {

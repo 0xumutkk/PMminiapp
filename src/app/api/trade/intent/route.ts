@@ -259,8 +259,76 @@ async function findMarketById(marketId: string): Promise<Market | null> {
   return snapshot.markets.find((market) => market.id === marketId) ?? null;
 }
 
-function matchesPositionMarket(position: { marketId: string; marketSlug: string }, marketId: string) {
-  return position.marketId === marketId || position.marketSlug === marketId;
+function normalizeMarketCandidate(value: string | undefined | null) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function buildMarketMatchCandidates(marketId: string, market: Market | null) {
+  return [
+    marketId,
+    market?.id,
+    market?.tradeVenue?.marketRef,
+    market?.tradeVenue?.venueExchange,
+    market?.tradeVenue?.venueAdapter
+  ]
+    .map(normalizeMarketCandidate)
+    .filter((value, index, values): value is string => value !== null && values.indexOf(value) === index);
+}
+
+function matchesPositionMarketCandidates(
+  position: { marketId: string; marketSlug: string },
+  candidates: string[]
+) {
+  const marketId = normalizeMarketCandidate(position.marketId);
+  const marketSlug = normalizeMarketCandidate(position.marketSlug);
+  return (
+    (!!marketId && candidates.includes(marketId)) ||
+    (!!marketSlug && candidates.includes(marketSlug))
+  );
+}
+
+function buildFallbackAmmMarkets(
+  historyAddresses: string[],
+  market: Market | null
+): AmmMarketRef[] {
+  const markets: AmmMarketRef[] = [];
+  const seen = new Set<string>();
+  const marketVenueExchange = market?.tradeVenue?.venueExchange;
+
+  if (marketVenueExchange && isAddress(marketVenueExchange)) {
+    const normalized = marketVenueExchange.toLowerCase();
+    seen.add(normalized);
+    markets.push({
+      id: market.id,
+      slug: market.id,
+      title: market.title,
+      contractAddress: marketVenueExchange,
+      yesPrice: market.yesPrice,
+      noPrice: market.noPrice
+    });
+  }
+
+  for (const address of historyAddresses) {
+    const normalized = address.toLowerCase();
+    if (seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    markets.push({
+      id: address,
+      slug: address,
+      title: "Position",
+      contractAddress: address
+    });
+  }
+
+  return markets;
 }
 
 function parseHostCandidate(raw: string | null | undefined) {
@@ -546,6 +614,8 @@ export async function POST(request: Request) {
         requireUsdcApprove = true;
       }
     } else if (action === "sell") {
+      const marketMatchCandidates = buildMarketMatchCandidates(marketId, market);
+
       // 1. Try Limitless portfolio API first
       let snapshot = await fetchPublicPortfolioPositions(verifiedWalletAddress);
 
@@ -554,21 +624,7 @@ export async function POST(request: Request) {
       //    (the user may have bought on an older FPMM instance of the same market).
       if (snapshot.active.length === 0 && snapshot.settled.length === 0) {
         const historyAddresses = await fetchFpmmAddressesFromHistory(verifiedWalletAddress);
-        const fpmmAddresses = new Set<string>(historyAddresses);
-
-        // Also include the current market's FPMM if available
-        if (market?.tradeVenue?.venueExchange) {
-          fpmmAddresses.add(market.tradeVenue.venueExchange);
-        }
-
-        const ammMarkets: AmmMarketRef[] = Array.from(fpmmAddresses).map((addr) => ({
-          id: addr,      // use address as id — matched below by side only
-          slug: addr,
-          title: "Position",
-          contractAddress: addr,
-          yesPrice: market?.yesPrice ?? 0.5,
-          noPrice: market?.noPrice ?? 0.5
-        }));
+        const ammMarkets = buildFallbackAmmMarkets(historyAddresses, market);
 
         if (ammMarkets.length > 0) {
           snapshot = await fetchOnchainAmmPositions(
@@ -581,12 +637,11 @@ export async function POST(request: Request) {
       // 3. Find the active position for the requested side.
       //    Try exact market slug match first; fall back to side-only match
       //    (historical FPMM positions use address as marketId, not slug).
-      let activePosition = snapshot.active.find(
-        (position) => matchesPositionMarket(position, marketId) && position.side === side
+      const activePosition = snapshot.active.find(
+        (position) =>
+          position.side === side &&
+          matchesPositionMarketCandidates(position, marketMatchCandidates)
       );
-      if (!activePosition && side) {
-        activePosition = snapshot.active.find((p) => p.side === side);
-      }
 
       if (!activePosition) {
         return Response.json(
@@ -596,7 +651,8 @@ export async function POST(request: Request) {
       }
 
       const maxSellUnits = parseUsdcUnits(activePosition.marketValueUsdc, usdcDecimals);
-      if (maxSellUnits === null || maxSellUnits <= 0n) {
+      const maxSharesToBurnUnits = parseUsdcUnits(activePosition.tokenBalance, usdcDecimals);
+      if (maxSellUnits === null || maxSellUnits <= 0n || maxSharesToBurnUnits === null || maxSharesToBurnUnits <= 0n) {
         return Response.json(
           { error: "Active position has no sellable exposure.", requestId },
           { status: 409, headers: rateHeaders }
@@ -651,7 +707,7 @@ export async function POST(request: Request) {
           const viable = await resolveViableSellAmount(
             tradeContract as `0x${string}`,
             outcomeIdx,
-            boundedSellUnits,
+            maxSharesToBurnUnits,
             usdcDecimals,
             requestedMaxSlippage
           );
@@ -676,6 +732,8 @@ export async function POST(request: Request) {
         }
       }
     } else {
+      const marketMatchCandidates = buildMarketMatchCandidates(marketId, market);
+
       // Redeem action: find a claimable settled position.
       // 1. Try Limitless portfolio API first.
       let snapshot = await fetchPublicPortfolioPositions(verifiedWalletAddress);
@@ -683,19 +741,7 @@ export async function POST(request: Request) {
       // 2. If no settled positions from API, fall back to on-chain lookup.
       if (snapshot.settled.length === 0) {
         const historyAddresses = await fetchFpmmAddressesFromHistory(verifiedWalletAddress);
-        const fpmmAddresses = new Set<string>(historyAddresses);
-        if (market?.tradeVenue?.venueExchange) {
-          fpmmAddresses.add(market.tradeVenue.venueExchange);
-        }
-
-        const ammMarkets: AmmMarketRef[] = Array.from(fpmmAddresses).map((addr) => ({
-          id: addr,
-          slug: addr,
-          title: "Position",
-          contractAddress: addr,
-          yesPrice: market?.yesPrice ?? 0.5,
-          noPrice: market?.noPrice ?? 0.5
-        }));
+        const ammMarkets = buildFallbackAmmMarkets(historyAddresses, market);
 
         if (ammMarkets.length > 0) {
           snapshot = await fetchOnchainAmmPositions(
@@ -706,15 +752,12 @@ export async function POST(request: Request) {
       }
 
       // 3. Find claimable settled position — try slug match first, then side-only.
-      let claimablePosition = snapshot.settled.find(
+      const claimablePosition = snapshot.settled.find(
         (position) =>
-          matchesPositionMarket(position, marketId) &&
+          matchesPositionMarketCandidates(position, marketMatchCandidates) &&
           position.side === side &&
           position.claimable
       );
-      if (!claimablePosition && side) {
-        claimablePosition = snapshot.settled.find((p) => p.side === side && p.claimable);
-      }
 
       if (!claimablePosition) {
         return Response.json(

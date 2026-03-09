@@ -12,6 +12,30 @@ type FeedState = {
 
 const WINDOW_RADIUS = 3;
 
+function normalizeMarketIdentifier(value: string | null | undefined) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function matchesStartAtMarket(market: MarketSnapshot["markets"][number], startAtMarketId: string) {
+  const target = normalizeMarketIdentifier(startAtMarketId);
+  if (!target) {
+    return false;
+  }
+
+  return [
+    market.id,
+    market.tradeVenue?.marketRef,
+    market.tradeVenue?.venueExchange
+  ]
+    .map(normalizeMarketIdentifier)
+    .some((candidate) => candidate === target);
+}
+
 function sortSnapshot(snapshot: MarketSnapshot): MarketSnapshot {
   return {
     ...snapshot,
@@ -42,6 +66,10 @@ export function VerticalMarketFeed({ initialSnapshot = null, startAtMarketId = n
 
   const containerRef = useRef<HTMLElement | null>(null);
   const elementMapRef = useRef<Map<number, HTMLElement>>(new Map());
+
+  useEffect(() => {
+    startAppliedRef.current = false;
+  }, [startAtMarketId]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -185,7 +213,7 @@ export function VerticalMarketFeed({ initialSnapshot = null, startAtMarketId = n
   // Jump to the startAt market once markets are loaded.
   useEffect(() => {
     if (startAppliedRef.current || !startAtMarketId || markets.length === 0) return;
-    const idx = markets.findIndex((m) => m.id === startAtMarketId);
+    const idx = markets.findIndex((market) => matchesStartAtMarket(market, startAtMarketId));
     if (idx >= 0) {
       startAppliedRef.current = true;
       setActiveIndex(idx);

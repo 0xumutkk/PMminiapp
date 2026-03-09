@@ -162,7 +162,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
                 id={`market-${position.marketId}`}
                 className="positionDetailCard"
                 style={{ cursor: 'pointer' }}
-                onClick={() => router.push(buildFeedHref(position.marketSlug || position.marketId))}
+                onClick={() => router.push(buildFeedHref(position.marketSlug || position.marketId) as any)}
               >
                 <div className="posContent">
                   <header className="posHeader">

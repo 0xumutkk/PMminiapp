@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server';
 
 // List of geo-blocked countries (ISO 3166-1 alpha-2 codes)
 // Turkey (TR), United States (US), Iran (IR), North Korea (KP), Syria (SY), Cuba (CU), etc.
-const BLOCKED_COUNTRIES = ['US', 'IR', 'KP', 'SY', 'CU', 'CN', 'AF', 'RU', 'BY'];
+const BLOCKED_COUNTRIES = ['TR','US', 'IR', 'KP', 'SY', 'CU', 'CN', 'AF', 'RU', 'BY'];
 
 export function middleware(request: NextRequest) {
     // Extract country from Next.js auto-populated geo object or common headers

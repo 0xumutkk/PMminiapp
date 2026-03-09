@@ -61,11 +61,13 @@ type TransferHistorySummary = {
   costBasisMap: Record<string, PositionCostBasisEntry>;
   tokenSideMap: Record<string, PositionSide>;
   marketActions: HistoryMarketAction[];
-  inboundPositionTokens: Array<{
-    contractAddress: string;
-    tokenId: string;
-    timestamp?: string;
-  }>;
+  inboundPositionTokens: HistoryInboundPositionToken[];
+};
+
+type HistoryInboundPositionToken = {
+  contractAddress: string;
+  tokenId: string;
+  timestamp?: string;
 };
 
 type RecentIncomingTransfer = {
@@ -267,7 +269,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
     const transferRecords: HistoryTransferRecord[] = [];
     const tokenSideMap: Record<string, PositionSide> = {};
     const marketActions: HistoryMarketAction[] = [];
-    const inboundPositionTokens: Array<{ contractAddress: string; tokenId: string }> = [];
+    const inboundPositionTokens: HistoryInboundPositionToken[] = [];
     const txHashes = new Set<string>();
     const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
     const inboundTokenKeys = new Set<string>();
@@ -538,7 +540,9 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
               timestamp: transfer.timestamp
             });
           }
-          tokenSideMap[inboundKey] = meta.side;
+          if (meta?.side) {
+            tokenSideMap[inboundKey] = meta.side;
+          }
         }
       }
 
@@ -1031,7 +1035,7 @@ function hasNonZeroDecimal(value: string | undefined) {
   return Number.isFinite(parsed) && parsed !== 0;
 }
 
-function hasVerifiedAmmPrice(value: number | undefined) {
+function hasVerifiedAmmPrice(value: number | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
@@ -1410,6 +1414,20 @@ function recomputeTotals(
   };
 }
 
+function createPortfolioSnapshot(
+  account: `0x${string}`,
+  active: TrackedPosition[] = [],
+  settled: TrackedPosition[] = []
+): PortfolioPositionsSnapshot {
+  return {
+    account,
+    fetchedAt: new Date().toISOString(),
+    active,
+    settled,
+    totals: recomputeTotals(active, settled)
+  };
+}
+
 function prunePlaceholderSettledPositions(settled: TrackedPosition[]) {
   return settled.filter((position) => {
     if (position.claimable || (position as any).isSold) {
@@ -1503,11 +1521,11 @@ function buildLatestActivityByKey(
 }
 
 function sortSnapshotActivePositions(
-  snapshot: PortfolioPositionsSnapshot | null,
+  snapshot: PortfolioPositionsSnapshot,
   historySummary: TransferHistorySummary,
   ammMarkets: AmmMarketRef[]
 ) {
-  if (!snapshot || snapshot.active.length <= 1) {
+  if (snapshot.active.length <= 1) {
     return snapshot;
   }
 
@@ -1721,12 +1739,14 @@ function mergeHistoricalSettledPositions(
   account: `0x${string}`,
   historicalSettled: TrackedPosition[]
 ) {
+  const baseSnapshot = snapshot ?? createPortfolioSnapshot(account);
+
   if (historicalSettled.length === 0) {
-    return snapshot;
+    return baseSnapshot;
   }
 
-  const active = snapshot?.active ?? [];
-  const settled = [...(snapshot?.settled ?? [])];
+  const active = baseSnapshot.active;
+  const settled = [...baseSnapshot.settled];
   const activeKeys = new Set<string>();
   const settledIndexByKey = new Map<string, number>();
 
@@ -1765,7 +1785,7 @@ function mergeHistoricalSettledPositions(
   const prunedSettled = prunePlaceholderSettledPositions(settled);
 
   return {
-    account: snapshot?.account ?? account,
+    account: baseSnapshot.account ?? account,
     fetchedAt: new Date().toISOString(),
     active,
     settled: prunedSettled,
@@ -2069,13 +2089,7 @@ export async function GET(request: Request) {
         return respondWithSnapshot(snapshot);
       }
       const fallbackSnapshot = sortSnapshotActivePositions(
-        mergeHistoricalSettledPositions(null, account as `0x${string}`, historicalSettled) ?? {
-          account: account as `0x${string}`,
-          fetchedAt: new Date().toISOString(),
-          active: [],
-          settled: historicalSettled,
-          totals: recomputeTotals([], historicalSettled)
-        },
+        mergeHistoricalSettledPositions(null, account as `0x${string}`, historicalSettled),
         historySummary,
         ammMarkets
       );

@@ -6,36 +6,45 @@ import type { NextRequest } from 'next/server';
 const BLOCKED_COUNTRIES = ['TR', 'US', 'IR', 'KP', 'SY', 'CU', 'CN', 'AF', 'RU', 'BY'];
 
 export function middleware(request: NextRequest) {
-    // Extract country from Next.js auto-populated geo object or common headers
+    const pathname = request.nextUrl.pathname;
+
+    // 1. Extract country from all possible sources
     const vGeoCountry = (request as any).geo?.country;
     const vHeaderCountry = request.headers.get('x-vercel-ip-country');
     const cfHeaderCountry = request.headers.get('cf-ipcountry');
+    const geoHeaderCountry = request.headers.get('x-geo-country'); // some other proxies
 
-    const pathname = request.nextUrl.pathname;
-    const country = vGeoCountry || vHeaderCountry || cfHeaderCountry || '';
+    const country = (cfHeaderCountry || vHeaderCountry || vGeoCountry || geoHeaderCountry || '').toUpperCase();
 
-    console.log(`[Middleware] Path: ${pathname} | Country: ${country} | Sources: vGeo=${vGeoCountry}, vHeader=${vHeaderCountry}, cfHeader=${cfHeaderCountry}`);
+    // 2. Logging for Debug (Only for page requests to keep logs clean)
+    const isPageRequest = !pathname.includes('.') && !pathname.startsWith('/_next');
+    if (isPageRequest) {
+        console.log(`[GeoBlock] Path: ${pathname} | Final Country: ${country} | CF: ${cfHeaderCountry} | V-Header: ${vHeaderCountry} | V-Geo: ${vGeoCountry}`);
+    }
 
-    // We don't want to block the restricted page itself or static assets
+    // 3. Bypass rules
     if (
         pathname.startsWith('/restricted') ||
-        pathname.includes('.') || // static files usually have extension
-        pathname.startsWith('/_next')
+        pathname.startsWith('/_next') ||
+        pathname.includes('.') ||
+        pathname === '/favicon.ico'
     ) {
         return NextResponse.next();
     }
 
+    // 4. Block Logic
     if (country && BLOCKED_COUNTRIES.includes(country)) {
-        // If it's an API request, return a 403 Forbidden JSON response
+        console.log(`[GeoBlock] REDIRECTING ${country} User from ${pathname} to /restricted`);
+
+        // If it's an API request, return 403
         if (pathname.startsWith('/api')) {
-            return NextResponse.json(
-                { error: 'Service unavailable in your region.' },
-                { status: 403 }
-            );
+            return NextResponse.json({ error: 'Region restricted' }, { status: 403 });
         }
-        // Redirect to a specific "restricted" page
-        request.nextUrl.pathname = '/restricted';
-        return NextResponse.rewrite(request.nextUrl);
+
+        // Redirect to restricted page (URL will change in browser)
+        const url = request.nextUrl.clone();
+        url.pathname = '/restricted';
+        return NextResponse.redirect(url);
     }
 
     return NextResponse.next();

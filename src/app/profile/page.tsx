@@ -101,7 +101,7 @@ function ProfileContent() {
 
   const claimableCount = snapshot?.settled.filter(s => s.claimable).length ?? 0;
   const closedCount = snapshot?.settled.filter(s => !s.claimable).length ?? 0;
-  const activeCount = filterVisibleActivePositions(snapshot?.active ?? []).length;
+  const activeCount = filterVisibleActivePositions(snapshot?.active ?? [], snapshot?.settled ?? []).length;
 
   return (
     <div

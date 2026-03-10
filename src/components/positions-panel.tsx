@@ -78,8 +78,8 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
   }, [account, isAuthenticated, refetch]);
 
   const activePositions = useMemo(
-    () => filterVisibleActivePositions(snapshot?.active ?? []),
-    [snapshot?.active]
+    () => filterVisibleActivePositions(snapshot?.active ?? [], snapshot?.settled ?? []),
+    [snapshot?.active, snapshot?.settled]
   );
   const closedPositions = useMemo(() => snapshot?.settled.filter((item) => !item.claimable) ?? [], [snapshot?.settled]);
   const claimableSettledPositions = useMemo(() => snapshot?.settled.filter((item) => item.claimable) ?? [], [snapshot?.settled]);
@@ -293,7 +293,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
                         </span>
                       </div>
                       <div className="statBox">
-                        <span className="posLabel">Holdings</span>
+                        <span className="posLabel">{isSold ? 'Sold' : 'Holdings'}</span>
                         <span className="posVal valWhite" style={{ fontSize: '14px' }}>
                           {Number(position.tokenBalance).toLocaleString()} Shares
                         </span>

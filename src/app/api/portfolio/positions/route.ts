@@ -3,6 +3,7 @@ import {
   type PortfolioPositionsSnapshot,
   type TrackedPosition
 } from "@/lib/portfolio/limitless-portfolio";
+import { MIN_VISIBLE_ACTIVE_SHARES } from "@/lib/portfolio/visible-active-positions";
 import {
   fetchOnchainAmmPositions,
   type AmmMarketRef,
@@ -59,6 +60,7 @@ type HistoricalActionState = {
 type TransferHistorySummary = {
   fpmmAddresses: string[];
   costBasisMap: Record<string, PositionCostBasisEntry>;
+  tokenCostBasisMap: Record<string, PositionCostBasisEntry>;
   tokenSideMap: Record<string, PositionSide>;
   marketActions: HistoryMarketAction[];
   inboundPositionTokens: HistoryInboundPositionToken[];
@@ -77,6 +79,55 @@ type RecentIncomingTransfer = {
   txHash?: string;
   timestamp?: string;
 };
+
+type RecentOutgoingTransfer = {
+  contractAddress: string;
+  tokenAmountRaw: string;
+  tokenId: string;
+  txHash?: string;
+  timestamp?: string;
+  action: "sell" | "redeem";
+};
+
+function getBaseRpcUrls() {
+  return [
+    process.env.NEXT_PUBLIC_BASE_RPC_URL,
+    "https://base-rpc.publicnode.com",
+    "https://base.drpc.org",
+    "https://mainnet.base.org"
+  ].filter((value, index, self): value is string => Boolean(value) && self.indexOf(value) === index);
+}
+
+async function callRpc<T>(
+  rpcUrl: string,
+  method: string,
+  params: unknown[],
+  timeoutMs: number
+): Promise<T | null> {
+  try {
+    const response = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method,
+        params,
+        id: 1
+      }),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as { result?: T };
+    return payload.result ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function normalizeRawTokenAmount(raw: unknown, decimals: number) {
   if (raw === null || raw === undefined) {
@@ -140,12 +191,7 @@ function parseOutcomeSide(raw: unknown): PositionSide | null {
 }
 
 async function fetchRecentIncomingCtTransfers(account: string): Promise<RecentIncomingTransfer[]> {
-  const rpcUrls = [
-    process.env.NEXT_PUBLIC_BASE_RPC_URL,
-    "https://base-rpc.publicnode.com",
-    "https://base.drpc.org",
-    "https://mainnet.base.org"
-  ].filter((value, index, self): value is string => Boolean(value) && self.indexOf(value) === index);
+  const rpcUrls = getBaseRpcUrls();
   const TRANSFER_SINGLE_TOPIC =
     "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62";
   const zeroTopic = "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -177,69 +223,61 @@ async function fetchRecentIncomingCtTransfers(account: string): Promise<RecentIn
         continue;
       }
 
-      const fromBlock = Math.max(0, latestBlock - 8_000);
-      const logsResponse = await fetch(rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "eth_getLogs",
-          params: [{
+      const transfers: RecentIncomingTransfer[] = [];
+      const fromBlock = Math.max(0, latestBlock - 60_000);
+      for (let windowEnd = latestBlock; windowEnd >= fromBlock; windowEnd -= 5_000) {
+        const windowStart = Math.max(fromBlock, windowEnd - 4_999);
+        const logs = await callRpc<unknown[]>(
+          rpcUrl,
+          "eth_getLogs",
+          [{
             address: CT_ADDRESS,
-            fromBlock: `0x${fromBlock.toString(16)}`,
-            toBlock: "latest",
+            fromBlock: `0x${windowStart.toString(16)}`,
+            toBlock: `0x${windowEnd.toString(16)}`,
             topics: [TRANSFER_SINGLE_TOPIC, null, null, accountTopic]
           }],
-          id: 1
-        }),
-        signal: AbortSignal.timeout(8_000)
-      });
+          8_000
+        );
 
-      if (!logsResponse.ok) {
-        continue;
-      }
-
-      const logsPayload = (await logsResponse.json()) as { result?: unknown[]; error?: unknown };
-      if (!Array.isArray(logsPayload.result)) {
-        continue;
-      }
-
-      const transfers: RecentIncomingTransfer[] = [];
-      for (const entry of logsPayload.result) {
-        if (!entry || typeof entry !== "object") continue;
-        const log = entry as Record<string, unknown>;
-        const topics = Array.isArray(log.topics) ? log.topics : [];
-        const data = typeof log.data === "string" ? log.data : "";
-        if (topics.length < 4 || !data.startsWith("0x") || data.length < 130) continue;
-
-        const operatorTopic = typeof topics[1] === "string" ? topics[1] : zeroTopic;
-        const fromTopic = typeof topics[2] === "string" ? topics[2] : zeroTopic;
-        const operatorAddress = `0x${operatorTopic.slice(-40)}`;
-        const fromAddress = `0x${fromTopic.slice(-40)}`;
-        const contractAddress = [operatorAddress, fromAddress].find((candidate) => {
-          const normalized = candidate.toLowerCase();
-          return normalized !== zeroAddress && normalized !== CT_ADDRESS_LOWER && isAddress(candidate);
-        });
-
-        if (!contractAddress) continue;
-
-        try {
-          const raw = data.slice(2);
-          const tokenId = BigInt(`0x${raw.slice(0, 64)}`).toString();
-          const tokenAmountRaw = BigInt(`0x${raw.slice(64, 128)}`).toString();
-          transfers.push({
-            contractAddress: contractAddress.toLowerCase(),
-            tokenId,
-            tokenAmountRaw,
-            txHash: typeof log.transactionHash === "string" ? log.transactionHash : undefined,
-            timestamp:
-              typeof log.blockTimestamp === "string"
-                ? new Date(Number(BigInt(log.blockTimestamp)) * 1000).toISOString()
-                : undefined
-          });
-        } catch {
+        if (!Array.isArray(logs)) {
           continue;
+        }
+
+        for (const entry of logs) {
+          if (!entry || typeof entry !== "object") continue;
+          const log = entry as Record<string, unknown>;
+          const topics = Array.isArray(log.topics) ? log.topics : [];
+          const data = typeof log.data === "string" ? log.data : "";
+          if (topics.length < 4 || !data.startsWith("0x") || data.length < 130) continue;
+
+          const operatorTopic = typeof topics[1] === "string" ? topics[1] : zeroTopic;
+          const fromTopic = typeof topics[2] === "string" ? topics[2] : zeroTopic;
+          const operatorAddress = `0x${operatorTopic.slice(-40)}`;
+          const fromAddress = `0x${fromTopic.slice(-40)}`;
+          const contractAddress = [operatorAddress, fromAddress].find((candidate) => {
+            const normalized = candidate.toLowerCase();
+            return normalized !== zeroAddress && normalized !== CT_ADDRESS_LOWER && isAddress(candidate);
+          });
+
+          if (!contractAddress) continue;
+
+          try {
+            const raw = data.slice(2);
+            const tokenId = BigInt(`0x${raw.slice(0, 64)}`).toString();
+            const tokenAmountRaw = BigInt(`0x${raw.slice(64, 128)}`).toString();
+            transfers.push({
+              contractAddress: contractAddress.toLowerCase(),
+              tokenId,
+              tokenAmountRaw,
+              txHash: typeof log.transactionHash === "string" ? log.transactionHash : undefined,
+              timestamp:
+                typeof log.blockTimestamp === "string"
+                  ? new Date(Number(BigInt(log.blockTimestamp)) * 1000).toISOString()
+                  : undefined
+            });
+          } catch {
+            continue;
+          }
         }
       }
 
@@ -252,6 +290,153 @@ async function fetchRecentIncomingCtTransfers(account: string): Promise<RecentIn
   }
 
   return [];
+}
+
+async function fetchRecentOutgoingCtTransfers(account: string): Promise<RecentOutgoingTransfer[]> {
+  const rpcUrls = getBaseRpcUrls();
+  const TRANSFER_SINGLE_TOPIC =
+    "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62";
+  const zeroTopic = "0x0000000000000000000000000000000000000000000000000000000000000000";
+  const zeroAddress = "0x0000000000000000000000000000000000000000";
+  const accountTopic = `0x${account.toLowerCase().slice(2).padStart(64, "0")}`;
+
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const latestBlockHex = await callRpc<string>(rpcUrl, "eth_blockNumber", [], 5_000);
+      const latestBlock = latestBlockHex ? Number(BigInt(latestBlockHex)) : Number.NaN;
+      if (!Number.isFinite(latestBlock) || latestBlock <= 0) {
+        continue;
+      }
+
+      const transfers: RecentOutgoingTransfer[] = [];
+      const fromBlock = Math.max(0, latestBlock - 60_000);
+      for (let windowEnd = latestBlock; windowEnd >= fromBlock; windowEnd -= 5_000) {
+        const windowStart = Math.max(fromBlock, windowEnd - 4_999);
+        const logs = await callRpc<unknown[]>(
+          rpcUrl,
+          "eth_getLogs",
+          [{
+            address: CT_ADDRESS,
+            fromBlock: `0x${windowStart.toString(16)}`,
+            toBlock: `0x${windowEnd.toString(16)}`,
+            topics: [TRANSFER_SINGLE_TOPIC, null, accountTopic, null]
+          }],
+          8_000
+        );
+
+        if (!Array.isArray(logs)) {
+          continue;
+        }
+
+        for (const entry of logs) {
+          if (!entry || typeof entry !== "object") continue;
+          const log = entry as Record<string, unknown>;
+          const topics = Array.isArray(log.topics) ? log.topics : [];
+          const data = typeof log.data === "string" ? log.data : "";
+          if (topics.length < 4 || !data.startsWith("0x") || data.length < 130) continue;
+
+          const operatorTopic = typeof topics[1] === "string" ? topics[1] : zeroTopic;
+          const toTopic = typeof topics[3] === "string" ? topics[3] : zeroTopic;
+          const operatorAddress = `0x${operatorTopic.slice(-40)}`;
+          const toAddress = `0x${toTopic.slice(-40)}`;
+          const contractAddress = [operatorAddress, toAddress].find((candidate) => {
+            const normalized = candidate.toLowerCase();
+            return normalized !== zeroAddress && normalized !== CT_ADDRESS_LOWER && isAddress(candidate);
+          });
+
+          try {
+            const raw = data.slice(2);
+            const tokenId = BigInt(`0x${raw.slice(0, 64)}`).toString();
+            const tokenAmountRaw = BigInt(`0x${raw.slice(64, 128)}`).toString();
+            transfers.push({
+              action: toAddress.toLowerCase() === zeroAddress ? "redeem" : "sell",
+              contractAddress: contractAddress?.toLowerCase() ?? "",
+              tokenId,
+              tokenAmountRaw,
+              txHash: typeof log.transactionHash === "string" ? log.transactionHash : undefined,
+              timestamp:
+                typeof log.blockTimestamp === "string"
+                  ? new Date(Number(BigInt(log.blockTimestamp)) * 1000).toISOString()
+                  : undefined
+            });
+          } catch {
+            continue;
+          }
+        }
+      }
+
+      if (transfers.length > 0) {
+        return transfers;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return [];
+}
+
+async function fetchRpcTransactionMeta(
+  txHash: string,
+  account: string
+): Promise<{ contractAddress?: string; costUsdc?: string; proceedsUsdc?: string } | null> {
+  const accountLower = account.toLowerCase();
+  const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+  for (const rpcUrl of getBaseRpcUrls()) {
+    const [tx, receipt] = await Promise.all([
+      callRpc<Record<string, unknown>>(rpcUrl, "eth_getTransactionByHash", [txHash], 5_000),
+      callRpc<Record<string, unknown>>(rpcUrl, "eth_getTransactionReceipt", [txHash], 5_000)
+    ]);
+
+    if (!tx && !receipt) {
+      continue;
+    }
+
+    const to = typeof tx?.to === "string" ? tx.to : undefined;
+    const contractAddress = to && isAddress(to) ? to.toLowerCase() : undefined;
+    const logs = Array.isArray(receipt?.logs) ? receipt.logs : [];
+    let rawUsdcSpent = 0n;
+    let rawUsdcReceived = 0n;
+
+    for (const entry of logs) {
+      if (!entry || typeof entry !== "object") continue;
+      const log = entry as Record<string, unknown>;
+      if (typeof log.address !== "string" || log.address.toLowerCase() !== USDC_ADDRESS_LOWER) {
+        continue;
+      }
+
+      const topics = Array.isArray(log.topics) ? log.topics : [];
+      const data = typeof log.data === "string" ? log.data : "";
+      if (
+        topics.length < 3 ||
+        typeof topics[0] !== "string" ||
+        topics[0].toLowerCase() !== transferTopic ||
+        !data.startsWith("0x")
+      ) {
+        continue;
+      }
+
+      const fromAddress = typeof topics[1] === "string" ? `0x${topics[1].slice(-40)}`.toLowerCase() : "";
+      const toAddress = typeof topics[2] === "string" ? `0x${topics[2].slice(-40)}`.toLowerCase() : "";
+      const amount = BigInt(data);
+
+      if (fromAddress === accountLower) {
+        rawUsdcSpent += amount;
+      }
+      if (toAddress === accountLower) {
+        rawUsdcReceived += amount;
+      }
+    }
+
+    return {
+      contractAddress,
+      costUsdc: rawUsdcSpent > 0n ? normalizeRawTokenAmount(rawUsdcSpent.toString(), 6) : undefined,
+      proceedsUsdc: rawUsdcReceived > 0n ? normalizeRawTokenAmount(rawUsdcReceived.toString(), 6) : undefined
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -273,6 +458,8 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
     const txHashes = new Set<string>();
     const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
     const inboundTokenKeys = new Set<string>();
+    const usdcSpentByTx = new Map<string, bigint>();
+    const usdcReceivedByTx = new Map<string, bigint>();
 
     let nextPageParams: string | null = null;
     for (let page = 0; page < 6; page++) {
@@ -432,8 +619,118 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
         } else {
           break;
         }
+    } catch (e) {
+      console.warn("Blockscout outgoing fetch failed:", e);
+      break;
+    }
+  }
+
+    const [recentIncomingTransfers, recentOutgoingTransfers] = await Promise.all([
+      fetchRecentIncomingCtTransfers(account),
+      fetchRecentOutgoingCtTransfers(account)
+    ]);
+
+    for (const transfer of recentIncomingTransfers) {
+      fpmmAddresses.add(transfer.contractAddress);
+      if (transfer.txHash) {
+        txHashes.add(transfer.txHash);
+      }
+      transferRecords.push({
+        txHash: transfer.txHash ?? `recent-in-${transfer.contractAddress}-${transfer.tokenId}`,
+        contractAddress: transfer.contractAddress,
+        tokenAmountRaw: transfer.tokenAmountRaw,
+        tokenId: transfer.tokenId,
+        timestamp: transfer.timestamp
+      });
+    }
+
+    for (const transfer of recentOutgoingTransfers) {
+      if (transfer.contractAddress) {
+        fpmmAddresses.add(transfer.contractAddress);
+      }
+      if (transfer.txHash) {
+        txHashes.add(transfer.txHash);
+      }
+      marketActions.push({
+        action: transfer.action,
+        contractAddress: transfer.contractAddress,
+        tokenId: transfer.tokenId,
+        txHash: transfer.txHash,
+        timestamp: transfer.timestamp
+      });
+    }
+
+    nextPageParams = null;
+    for (let page = 0; page < 6; page++) {
+      const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?type=ERC-20`;
+      const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
+      try {
+        const response = await fetch(url, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          // @ts-ignore
+          next: { revalidate: 0 },
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!response.ok) break;
+
+        const payload = (await response.json()) as { items?: unknown[]; next_page_params?: Record<string, unknown> | null };
+        const items = Array.isArray(payload.items) ? payload.items : [];
+
+        for (const item of items) {
+          if (typeof item !== "object" || item === null) continue;
+          const r = item as Record<string, unknown>;
+          const txHash =
+            (typeof r.transaction_hash === "string" ? r.transaction_hash : undefined) ??
+            (typeof r.tx_hash === "string" ? r.tx_hash : undefined);
+          if (!txHash || (txHashes.size > 0 && !txHashes.has(txHash))) {
+            continue;
+          }
+
+          const token = r.token as Record<string, unknown> | undefined;
+          const tokenAddress = typeof token?.address_hash === "string" ? token.address_hash.toLowerCase() : undefined;
+          if (tokenAddress !== USDC_ADDRESS_LOWER) {
+            continue;
+          }
+
+          const total = r.total as Record<string, unknown> | undefined;
+          const rawValue =
+            typeof total?.value === "string"
+              ? total.value
+              : typeof total?.value === "number"
+                ? String(total.value)
+                : undefined;
+          if (!rawValue) {
+            continue;
+          }
+
+          const from = r.from as Record<string, unknown> | undefined;
+          const to = r.to as Record<string, unknown> | undefined;
+          const fromHash = typeof from?.hash === "string" ? from.hash.toLowerCase() : undefined;
+          const toHash = typeof to?.hash === "string" ? to.hash.toLowerCase() : undefined;
+          const amount = BigInt(rawValue);
+
+          if (fromHash === accountLower) {
+            usdcSpentByTx.set(txHash, (usdcSpentByTx.get(txHash) ?? 0n) + amount);
+          }
+          if (toHash === accountLower) {
+            usdcReceivedByTx.set(txHash, (usdcReceivedByTx.get(txHash) ?? 0n) + amount);
+          }
+        }
+
+        if (payload.next_page_params && typeof payload.next_page_params === "object") {
+          const params = new URLSearchParams();
+          for (const [key, value] of Object.entries(payload.next_page_params)) {
+            if (value !== null && value !== undefined) {
+              params.set(key, String(value));
+            }
+          }
+          nextPageParams = params.toString();
+        } else {
+          break;
+        }
       } catch (e) {
-        console.warn("Blockscout outgoing fetch failed:", e);
+        console.warn("Blockscout ERC20 fetch failed:", e);
         break;
       }
     }
@@ -450,7 +747,29 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
         try {
           const txUrl = `https://base.blockscout.com/api/v2/transactions/${txHash}`;
           const txResp = await fetch(txUrl, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(5000) });
-          if (!txResp.ok) return;
+          if (!txResp.ok) {
+            const rpcMeta = await fetchRpcTransactionMeta(txHash, account);
+            const fallbackCostRaw = usdcSpentByTx.get(txHash) ?? 0n;
+            const fallbackProceedsRaw = usdcReceivedByTx.get(txHash) ?? 0n;
+            if (rpcMeta?.contractAddress) {
+              fpmmAddresses.add(rpcMeta.contractAddress);
+            }
+            if (fallbackCostRaw > 0n || fallbackProceedsRaw > 0n || rpcMeta?.costUsdc || rpcMeta?.proceedsUsdc) {
+              txMetaByHash.set(txHash, {
+                contractAddress: rpcMeta?.contractAddress,
+                side: null,
+                costUsdc:
+                  fallbackCostRaw > 0n
+                    ? normalizeRawTokenAmount(fallbackCostRaw.toString(), 6)
+                    : rpcMeta?.costUsdc,
+                proceedsUsdc:
+                  fallbackProceedsRaw > 0n
+                    ? normalizeRawTokenAmount(fallbackProceedsRaw.toString(), 6)
+                    : rpcMeta?.proceedsUsdc
+              });
+            }
+            return;
+          }
           const tx = (await txResp.json()) as Record<string, unknown>;
           const toRecord = tx.to as Record<string, unknown> | undefined;
           const toHash = typeof toRecord?.hash === "string" ? toRecord.hash.toLowerCase() : undefined;
@@ -497,6 +816,29 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
             }
           }
 
+          const fallbackSpentRaw = usdcSpentByTx.get(txHash) ?? 0n;
+          const fallbackReceivedRaw = usdcReceivedByTx.get(txHash) ?? 0n;
+          const rpcMeta =
+            rawUsdcSpent === 0n && rawUsdcReceived === 0n && fallbackSpentRaw === 0n && fallbackReceivedRaw === 0n
+              ? await fetchRpcTransactionMeta(txHash, account)
+              : null;
+
+          if (!costUsdc && rawUsdcSpent === 0n && fallbackSpentRaw > 0n) {
+            rawUsdcSpent = fallbackSpentRaw;
+          }
+
+          if (rawUsdcReceived === 0n && fallbackReceivedRaw > 0n) {
+            rawUsdcReceived = fallbackReceivedRaw;
+          }
+
+          if (!costUsdc && rawUsdcSpent === 0n && rpcMeta?.costUsdc) {
+            costUsdc = rpcMeta.costUsdc;
+          }
+
+          if (rawUsdcReceived === 0n && rpcMeta?.proceedsUsdc) {
+            rawUsdcReceived = BigInt(Math.round(Number(rpcMeta.proceedsUsdc) * 1_000_000));
+          }
+
           if (!costUsdc && rawUsdcSpent > 0n) {
             costUsdc = normalizeRawTokenAmount(rawUsdcSpent.toString(), 6);
           }
@@ -509,14 +851,33 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
       })
     );
 
+    const uniqueTransferRecords = Array.from(
+      new Map(
+        transferRecords.map((transfer) => [
+          `${transfer.txHash}:${transfer.contractAddress ?? ""}:${transfer.tokenId ?? ""}:${transfer.tokenAmountRaw}`,
+          transfer
+        ])
+      ).values()
+    );
+
+    const uniqueMarketActions = Array.from(
+      new Map(
+        marketActions.map((action) => [
+          `${action.action}:${action.contractAddress}:${action.tokenId}:${action.txHash ?? ""}`,
+          action
+        ])
+      ).values()
+    );
+
     const transfersByTx = new Map<string, HistoryTransferRecord[]>();
-    for (const transfer of transferRecords) {
+    for (const transfer of uniqueTransferRecords) {
       const bucket = transfersByTx.get(transfer.txHash) ?? [];
       bucket.push(transfer);
       transfersByTx.set(transfer.txHash, bucket);
     }
 
     const costBasisMap: Record<string, PositionCostBasisEntry> = {};
+    const tokenCostBasisMap: Record<string, PositionCostBasisEntry> = {};
     for (const [txHash, transfers] of transfersByTx.entries()) {
       const meta = txMetaByHash.get(txHash);
       const contractAddress =
@@ -528,6 +889,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
       }
 
       fpmmAddresses.add(contractAddress.toLowerCase());
+      const tokenAmountsById = new Map<string, string[]>();
 
       for (const transfer of transfers) {
         if (transfer.tokenId) {
@@ -543,7 +905,19 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
           if (meta?.side) {
             tokenSideMap[inboundKey] = meta.side;
           }
+          const tokenAmounts = tokenAmountsById.get(transfer.tokenId) ?? [];
+          tokenAmounts.push(normalizeRawTokenAmount(transfer.tokenAmountRaw, 6));
+          tokenAmountsById.set(transfer.tokenId, tokenAmounts);
         }
+      }
+
+      for (const [tokenId, tokenAmounts] of tokenAmountsById.entries()) {
+        const tokenKey = `${contractAddress.toLowerCase()}:${tokenId}`;
+        const previous = tokenCostBasisMap[tokenKey] ?? { costUsdc: "0", tokenAmount: "0" };
+        tokenCostBasisMap[tokenKey] = {
+          costUsdc: sumDecimalStrings([previous.costUsdc, meta?.costUsdc ?? "0"]),
+          tokenAmount: sumDecimalStrings([previous.tokenAmount ?? "0", sumDecimalStrings(tokenAmounts)])
+        };
       }
 
       if (!meta?.side || !meta.costUsdc) {
@@ -562,21 +936,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
       };
     }
 
-    const recentTransfers = await fetchRecentIncomingCtTransfers(account);
-    for (const transfer of recentTransfers) {
-      fpmmAddresses.add(transfer.contractAddress);
-      const inboundKey = `${transfer.contractAddress}:${transfer.tokenId}`;
-      if (!inboundTokenKeys.has(inboundKey)) {
-        inboundTokenKeys.add(inboundKey);
-        inboundPositionTokens.push({
-          contractAddress: transfer.contractAddress,
-          tokenId: transfer.tokenId,
-          timestamp: transfer.timestamp
-        });
-      }
-    }
-
-    const enrichedMarketActions = marketActions.map((action) => {
+    const enrichedMarketActions = uniqueMarketActions.map((action) => {
       if (!action.txHash) {
         return action;
       }
@@ -595,6 +955,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
     return {
       fpmmAddresses: Array.from(fpmmAddresses),
       costBasisMap,
+      tokenCostBasisMap,
       tokenSideMap,
       marketActions: enrichedMarketActions,
       inboundPositionTokens
@@ -603,6 +964,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
     return {
       fpmmAddresses: [],
       costBasisMap: {},
+      tokenCostBasisMap: {},
       tokenSideMap: {},
       marketActions: [],
       inboundPositionTokens: []
@@ -1077,6 +1439,60 @@ function mergeHistoricalActionState(
   };
 }
 
+function mergeCostBasisEntries(
+  existing: PositionCostBasisEntry | undefined,
+  incoming: PositionCostBasisEntry
+): PositionCostBasisEntry {
+  if (!existing) {
+    return incoming;
+  }
+
+  return {
+    costUsdc: sumDecimalStrings([existing.costUsdc, incoming.costUsdc]),
+    tokenAmount: sumDecimalStrings([existing.tokenAmount ?? "0", incoming.tokenAmount ?? "0"])
+  };
+}
+
+function augmentHistorySummaryWithTokenCostBasis(
+  historySummary: TransferHistorySummary,
+  ammMarkets: AmmMarketRef[]
+): TransferHistorySummary {
+  if (Object.keys(historySummary.tokenCostBasisMap).length === 0) {
+    return historySummary;
+  }
+
+  const marketByAddress = new Map<string, AmmMarketRef>();
+  for (const market of ammMarkets) {
+    marketByAddress.set(market.contractAddress.toLowerCase(), market);
+  }
+
+  const costBasisMap = { ...historySummary.costBasisMap };
+  for (const [tokenKey, entry] of Object.entries(historySummary.tokenCostBasisMap)) {
+    const separator = tokenKey.lastIndexOf(":");
+    if (separator <= 0) {
+      continue;
+    }
+
+    const contractAddress = tokenKey.slice(0, separator);
+    const tokenId = tokenKey.slice(separator + 1);
+    const market = marketByAddress.get(contractAddress);
+    const side = resolveMarketSideFromTokenId(market, tokenId, historySummary.tokenSideMap);
+    if (!side) {
+      continue;
+    }
+
+    const sideKey = `${contractAddress}:${side}`;
+    if (!costBasisMap[sideKey] || !hasPositiveDecimal(costBasisMap[sideKey].costUsdc)) {
+      costBasisMap[sideKey] = entry;
+    }
+  }
+
+  return {
+    ...historySummary,
+    costBasisMap
+  };
+}
+
 function mergeHistoricalSettledPosition(existing: TrackedPosition, historical: TrackedPosition): TrackedPosition {
   return {
     ...existing,
@@ -1430,7 +1846,7 @@ function createPortfolioSnapshot(
 
 function prunePlaceholderSettledPositions(settled: TrackedPosition[]) {
   return settled.filter((position) => {
-    if (position.claimable || (position as any).isSold) {
+    if (position.claimable) {
       return true;
     }
 
@@ -1590,9 +2006,11 @@ function buildHistoricalSettledPositions(
   }
 
   const existingActiveKeys = new Set<string>();
+  const activePositionByKey = new Map<string, TrackedPosition>();
   for (const position of existingSnapshot?.active ?? []) {
     for (const key of buildPositionLookupKeys(position)) {
       existingActiveKeys.add(key);
+      activePositionByKey.set(key, position);
     }
   }
 
@@ -1656,16 +2074,27 @@ function buildHistoricalSettledPositions(
       `${market.id.toLowerCase()}:${side}`,
       `${market.slug.toLowerCase()}:${side}`
     ];
-    if (existingLookupKeys.some((lookupKey) => existingActiveKeys.has(lookupKey))) {
-      continue;
-    }
-
     const actionMeta = actionsByKey.get(`${contractAddress}:${side}`);
     const action = actionMeta?.action;
     const proceedsUsdc = actionMeta?.proceedsUsdc ?? "0";
     const costBasis = historySummary.costBasisMap[key];
     const costUsdc = costBasis?.costUsdc ?? "0";
     const shares = costBasis?.tokenAmount ?? "0";
+    const activePosition = existingLookupKeys
+      .map((lookupKey) => activePositionByKey.get(lookupKey))
+      .find((position): position is TrackedPosition => Boolean(position));
+    const remainingShares = Number(activePosition?.tokenBalance ?? "0");
+    const totalShares = Number(shares);
+    const isPartialSoldDustPosition =
+      action === "sell" &&
+      Number.isFinite(remainingShares) &&
+      remainingShares > 0 &&
+      remainingShares < MIN_VISIBLE_ACTIVE_SHARES;
+
+    if (existingLookupKeys.some((lookupKey) => existingActiveKeys.has(lookupKey)) && !isPartialSoldDustPosition) {
+      continue;
+    }
+
     const isResolved = market.expired === true || market.status?.toLowerCase().includes("resolved") === true;
     const isClosedHistoryCandidate = isResolved || action === "sell" || action === "redeem";
     if (!isClosedHistoryCandidate) {
@@ -1683,6 +2112,7 @@ function buildHistoricalSettledPositions(
     let currentPrice: number | undefined;
     let marketValueUsdc = "0";
     let realizedPnlUsdc = "0";
+    let historyTokenBalance = "0";
 
     if (isRedeemed) {
       currentPrice = 1;
@@ -1701,10 +2131,19 @@ function buildHistoricalSettledPositions(
       }
     } else if (isSold) {
       currentPrice = side === "yes" ? market.yesPrice : market.noPrice;
+      const soldShares =
+        Number.isFinite(totalShares) && totalShares > 0
+          ? Math.max(0, totalShares - Math.max(0, remainingShares))
+          : 0;
+      historyTokenBalance = soldShares > 0 ? formatDecimalString(soldShares) : "0";
       if (hasPositiveDecimal(proceedsUsdc)) {
         marketValueUsdc = proceedsUsdc;
         if (hasPositiveDecimal(costUsdc)) {
-          realizedPnlUsdc = formatDecimalString(Number(proceedsUsdc) - Number(costUsdc));
+          const soldCostUsdc =
+            Number.isFinite(totalShares) && totalShares > 0 && soldShares > 0
+              ? Number(costUsdc) * Math.min(1, soldShares / totalShares)
+              : Number(costUsdc);
+          realizedPnlUsdc = formatDecimalString(Number(proceedsUsdc) - soldCostUsdc);
         }
       }
     }
@@ -1723,7 +2162,7 @@ function buildHistoricalSettledPositions(
         unrealizedPnlUsdc: "0",
         realizedPnlUsdc,
         claimable: false,
-        tokenBalance: "0",
+        tokenBalance: historyTokenBalance,
         currentPrice,
         endsAt: market.endsAt,
         isSold
@@ -1748,11 +2187,13 @@ function mergeHistoricalSettledPositions(
   const active = baseSnapshot.active;
   const settled = [...baseSnapshot.settled];
   const activeKeys = new Set<string>();
+  const activePositionByKey = new Map<string, TrackedPosition>();
   const settledIndexByKey = new Map<string, number>();
 
   active.forEach((position) => {
     for (const key of buildPositionLookupKeys(position)) {
       activeKeys.add(key);
+      activePositionByKey.set(key, position);
     }
   });
 
@@ -1764,7 +2205,17 @@ function mergeHistoricalSettledPositions(
 
   for (const position of historicalSettled) {
     const keys = buildPositionLookupKeys(position);
-    if (keys.some((key) => activeKeys.has(key))) {
+    const activePosition = keys
+      .map((key) => activePositionByKey.get(key))
+      .find((entry): entry is TrackedPosition => Boolean(entry));
+    const activeTokenBalance = Number(activePosition?.tokenBalance ?? "0");
+    const allowSoldDustHistory =
+      position.isSold === true &&
+      Number.isFinite(activeTokenBalance) &&
+      activeTokenBalance > 0 &&
+      activeTokenBalance < MIN_VISIBLE_ACTIVE_SHARES;
+
+    if (keys.some((key) => activeKeys.has(key)) && !allowSoldDustHistory) {
       continue;
     }
 
@@ -2000,18 +2451,19 @@ export async function GET(request: Request) {
     // historical market discovery and fallback cost basis.
     const historySummaryPromise = fetchTransferHistorySummary(account);
 
-    const [rawPublicPortfolio, historySummary] = await Promise.all([
+    const [rawPublicPortfolio, rawHistorySummary] = await Promise.all([
       publicPortfolioPromise,
       historySummaryPromise
     ]);
     const hasPublicPositions =
       rawPublicPortfolio !== null &&
       (rawPublicPortfolio.active.length > 0 || rawPublicPortfolio.settled.length > 0);
-    const shouldFetchOnchain = !hasPublicPositions || historySummary.fpmmAddresses.length > 0;
-    const shouldIncludeCatalog = !hasPublicPositions && historySummary.fpmmAddresses.length === 0;
+    const shouldFetchOnchain = !hasPublicPositions || rawHistorySummary.fpmmAddresses.length > 0;
+    const shouldIncludeCatalog = !hasPublicPositions && rawHistorySummary.fpmmAddresses.length === 0;
     const ammMarkets = shouldFetchOnchain
-      ? await fetchAmmMarketsForOnchain(historySummary.fpmmAddresses, shouldIncludeCatalog)
+      ? await fetchAmmMarketsForOnchain(rawHistorySummary.fpmmAddresses, shouldIncludeCatalog)
       : [];
+    const historySummary = augmentHistorySummaryWithTokenCostBasis(rawHistorySummary, ammMarkets);
     const publicPortfolio = enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, ammMarkets);
     const historicalSettled = buildHistoricalSettledPositions(historySummary, ammMarkets, publicPortfolio);
 

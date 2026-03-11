@@ -18,8 +18,11 @@ import * as fs from "node:fs";
 export const runtime = "nodejs";
 const ACTIVE_MARKET_PAGE_LIMIT = 6;
 const ONCHAIN_ENRICH_TIMEOUT_MS = 20_000;
+const LIGHT_ONCHAIN_ENRICH_TIMEOUT_MS = 12_000;
+const HISTORY_SUMMARY_TIMEOUT_MS = 8_000;
 const SNAPSHOT_CACHE_TTL_SECONDS = 300;
 const FAST_SNAPSHOT_MAX_AGE_MS = 20_000;
+const STALE_SNAPSHOT_MAX_AGE_MS = SNAPSHOT_CACHE_TTL_SECONDS * 1000;
 const ACTIVE_SNAPSHOT_VALUE_DROP_RATIO = 0.5;
 const SETTLED_SNAPSHOT_COUNT_DROP_RATIO = 0.5;
 
@@ -87,6 +90,16 @@ type RecentOutgoingTransfer = {
   txHash?: string;
   timestamp?: string;
   action: "sell" | "redeem";
+};
+
+type BlockscoutHistoryEvent = {
+  direction: "in" | "out";
+  action: "buy" | "sell" | "redeem";
+  contractAddress?: string;
+  tokenId: string;
+  tokenAmount: string;
+  txHash?: string;
+  timestamp?: string;
 };
 
 function getBaseRpcUrls() {
@@ -1795,6 +1808,448 @@ function getSnapshotAgeMs(snapshot: PortfolioPositionsSnapshot | null) {
   return Math.max(0, Date.now() - fetchedAt);
 }
 
+function emptyTransferHistorySummary(): TransferHistorySummary {
+  return {
+    fpmmAddresses: [],
+    costBasisMap: {},
+    tokenCostBasisMap: {},
+    tokenSideMap: {},
+    marketActions: [],
+    inboundPositionTokens: []
+  };
+}
+
+function parseTimestampMs(value?: string) {
+  if (!value) {
+    return 0;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<PortfolioPositionsSnapshot> {
+  const accountLower = account.toLowerCase();
+  const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+  const historyEvents: BlockscoutHistoryEvent[] = [];
+  const usdcSpentByTx = new Map<string, bigint>();
+  const usdcReceivedByTx = new Map<string, bigint>();
+
+  const fetchCtTransfers = async (direction: "in" | "out") => {
+    let nextPageParams: string | null = null;
+
+    for (let page = 0; page < 6; page++) {
+      const filter = direction === "in" ? "to" : "from";
+      const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=${filter}&type=ERC-1155`;
+      const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        // @ts-ignore
+        next: { revalidate: 0 },
+        signal: AbortSignal.timeout(5_000)
+      });
+
+      if (!response.ok) {
+        break;
+      }
+
+      const payload = (await response.json()) as {
+        items?: unknown[];
+        next_page_params?: Record<string, unknown> | null;
+      };
+      const items = Array.isArray(payload.items) ? payload.items : [];
+
+      for (const item of items) {
+        if (!item || typeof item !== "object") continue;
+        const record = item as Record<string, unknown>;
+        if (record.token_type !== "ERC-1155") continue;
+
+        const token = record.token as Record<string, unknown> | undefined;
+        if (typeof token?.address_hash !== "string" || token.address_hash.toLowerCase() !== CT_ADDRESS_LOWER) {
+          continue;
+        }
+
+        const total = record.total as Record<string, unknown> | undefined;
+        const tokenId =
+          typeof total?.token_id === "string"
+            ? total.token_id
+            : typeof total?.token_id === "number"
+              ? String(total.token_id)
+              : "";
+        const rawValue =
+          typeof total?.value === "string"
+            ? total.value
+            : typeof total?.value === "number"
+              ? String(total.value)
+              : "";
+
+        if (!tokenId || !rawValue) {
+          continue;
+        }
+
+        const timestamp = typeof record.timestamp === "string" ? record.timestamp : undefined;
+        const txHash =
+          (typeof record.transaction_hash === "string" ? record.transaction_hash : undefined) ??
+          (typeof record.tx_hash === "string" ? record.tx_hash : undefined);
+
+        const from = record.from as Record<string, unknown> | undefined;
+        const to = record.to as Record<string, unknown> | undefined;
+        const fromHash = typeof from?.hash === "string" ? from.hash.toLowerCase() : undefined;
+        const toHash = typeof to?.hash === "string" ? to.hash.toLowerCase() : undefined;
+
+        let contractAddress: string | undefined;
+        let action: BlockscoutHistoryEvent["action"];
+
+        if (direction === "in") {
+          contractAddress =
+            fromHash && fromHash !== ZERO_ADDRESS && isAddress(fromHash) ? fromHash : undefined;
+          action = "buy";
+        } else if (toHash === ZERO_ADDRESS) {
+          action = "redeem";
+        } else {
+          action = "sell";
+          contractAddress =
+            toHash && toHash !== ZERO_ADDRESS && isAddress(toHash) ? toHash : undefined;
+        }
+
+        historyEvents.push({
+          direction,
+          action,
+          contractAddress,
+          tokenId,
+          tokenAmount: normalizeRawTokenAmount(rawValue, 6),
+          txHash,
+          timestamp
+        });
+      }
+
+      if (payload.next_page_params && typeof payload.next_page_params === "object") {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(payload.next_page_params)) {
+          if (value !== null && value !== undefined) {
+            params.set(key, String(value));
+          }
+        }
+        nextPageParams = params.toString();
+      } else {
+        break;
+      }
+    }
+  };
+
+  const fetchUsdcTransfers = async () => {
+    let nextPageParams: string | null = null;
+
+    for (let page = 0; page < 6; page++) {
+      const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?type=ERC-20`;
+      const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        // @ts-ignore
+        next: { revalidate: 0 },
+        signal: AbortSignal.timeout(5_000)
+      });
+
+      if (!response.ok) {
+        break;
+      }
+
+      const payload = (await response.json()) as {
+        items?: unknown[];
+        next_page_params?: Record<string, unknown> | null;
+      };
+      const items = Array.isArray(payload.items) ? payload.items : [];
+
+      for (const item of items) {
+        if (!item || typeof item !== "object") continue;
+        const record = item as Record<string, unknown>;
+        const token = record.token as Record<string, unknown> | undefined;
+        const tokenAddress = typeof token?.address_hash === "string" ? token.address_hash.toLowerCase() : undefined;
+        if (tokenAddress !== USDC_ADDRESS_LOWER) {
+          continue;
+        }
+
+        const txHash =
+          (typeof record.transaction_hash === "string" ? record.transaction_hash : undefined) ??
+          (typeof record.tx_hash === "string" ? record.tx_hash : undefined);
+        if (!txHash) {
+          continue;
+        }
+
+        const total = record.total as Record<string, unknown> | undefined;
+        const rawValue =
+          typeof total?.value === "string"
+            ? total.value
+            : typeof total?.value === "number"
+              ? String(total.value)
+              : undefined;
+        if (!rawValue) {
+          continue;
+        }
+
+        const from = record.from as Record<string, unknown> | undefined;
+        const to = record.to as Record<string, unknown> | undefined;
+        const fromHash = typeof from?.hash === "string" ? from.hash.toLowerCase() : undefined;
+        const toHash = typeof to?.hash === "string" ? to.hash.toLowerCase() : undefined;
+        const amount = BigInt(rawValue);
+
+        if (fromHash === accountLower) {
+          usdcSpentByTx.set(txHash, (usdcSpentByTx.get(txHash) ?? 0n) + amount);
+        }
+        if (toHash === accountLower) {
+          usdcReceivedByTx.set(txHash, (usdcReceivedByTx.get(txHash) ?? 0n) + amount);
+        }
+      }
+
+      if (payload.next_page_params && typeof payload.next_page_params === "object") {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(payload.next_page_params)) {
+          if (value !== null && value !== undefined) {
+            params.set(key, String(value));
+          }
+        }
+        nextPageParams = params.toString();
+      } else {
+        break;
+      }
+    }
+  };
+
+  await Promise.all([
+    fetchCtTransfers("in"),
+    fetchCtTransfers("out"),
+    fetchUsdcTransfers()
+  ]);
+
+  const historyAddresses = Array.from(
+    new Set(
+      historyEvents
+        .map((event) => event.contractAddress?.toLowerCase())
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+
+  if (historyEvents.length === 0 || historyAddresses.length === 0) {
+    return createPortfolioSnapshot(account);
+  }
+
+  const ammMarkets = await fetchAmmMarketsForOnchain(historyAddresses, false);
+  const marketByAddress = new Map<string, AmmMarketRef>();
+  for (const market of ammMarkets) {
+    marketByAddress.set(market.contractAddress.toLowerCase(), market);
+  }
+
+  const resolveMarketForEvent = (event: BlockscoutHistoryEvent) => {
+    if (event.contractAddress) {
+      const direct = marketByAddress.get(event.contractAddress.toLowerCase());
+      if (direct) {
+        return direct;
+      }
+    }
+
+    return (
+      ammMarkets.find((market) => resolveMarketSideFromTokenId(market, event.tokenId) !== null) ??
+      null
+    );
+  };
+
+  const buckets = new Map<string, {
+    market: AmmMarketRef;
+    side: PositionSide;
+    boughtShares: number;
+    currentShares: number;
+    soldShares: number;
+    costUsdc: number;
+    proceedsUsdc: number;
+    hadSell: boolean;
+    hadRedeem: boolean;
+    latestTimestamp?: string;
+    latestTimestampMs: number;
+  }>();
+
+  const countedBuyTxKeys = new Set<string>();
+  const countedExitTxKeys = new Set<string>();
+
+  const orderedEvents = [...historyEvents].sort(
+    (left, right) => parseTimestampMs(left.timestamp) - parseTimestampMs(right.timestamp)
+  );
+
+  for (const event of orderedEvents) {
+    const market = resolveMarketForEvent(event);
+    if (!market) {
+      continue;
+    }
+
+    const side = resolveMarketSideFromTokenId(market, event.tokenId);
+    if (!side) {
+      continue;
+    }
+
+    const key = `${market.contractAddress.toLowerCase()}:${side}`;
+    const bucket = buckets.get(key) ?? {
+      market,
+      side,
+      boughtShares: 0,
+      currentShares: 0,
+      soldShares: 0,
+      costUsdc: 0,
+      proceedsUsdc: 0,
+      hadSell: false,
+      hadRedeem: false,
+      latestTimestampMs: 0
+    };
+
+    const amount = Number(event.tokenAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      continue;
+    }
+
+    bucket.market = market;
+    const eventTimestampMs = parseTimestampMs(event.timestamp);
+    if (eventTimestampMs >= bucket.latestTimestampMs) {
+      bucket.latestTimestampMs = eventTimestampMs;
+      bucket.latestTimestamp = event.timestamp;
+    }
+
+    if (event.direction === "in") {
+      bucket.boughtShares += amount;
+      bucket.currentShares += amount;
+      if (event.txHash) {
+        const txKey = `${key}:${event.txHash}`;
+        if (!countedBuyTxKeys.has(txKey)) {
+          countedBuyTxKeys.add(txKey);
+          const cost = usdcSpentByTx.get(event.txHash);
+          if (cost && cost > 0n) {
+            bucket.costUsdc += Number(normalizeRawTokenAmount(cost.toString(), 6));
+          }
+        }
+      }
+    } else {
+      bucket.currentShares = Math.max(0, bucket.currentShares - amount);
+      bucket.soldShares += amount;
+      bucket.hadSell = bucket.hadSell || event.action === "sell";
+      bucket.hadRedeem = bucket.hadRedeem || event.action === "redeem";
+      if (event.txHash) {
+        const txKey = `${key}:${event.txHash}`;
+        if (!countedExitTxKeys.has(txKey)) {
+          countedExitTxKeys.add(txKey);
+          const proceeds = usdcReceivedByTx.get(event.txHash);
+          if (proceeds && proceeds > 0n) {
+            bucket.proceedsUsdc += Number(normalizeRawTokenAmount(proceeds.toString(), 6));
+          }
+        }
+      }
+    }
+
+    buckets.set(key, bucket);
+  }
+
+  const active: TrackedPosition[] = [];
+  const settled: TrackedPosition[] = [];
+
+  for (const bucket of buckets.values()) {
+    const totalShares = bucket.boughtShares;
+    const remainingShares = Math.max(0, bucket.currentShares);
+    const totalCost = Math.max(0, bucket.costUsdc);
+    const remainingRatio = totalShares > 0 ? Math.min(Math.max(remainingShares / totalShares, 0), 1) : 0;
+    const remainingCost = totalCost * remainingRatio;
+    const exitedCost = Math.max(0, totalCost - remainingCost);
+
+    const market = bucket.market;
+    const currentPrice = bucket.side === "yes" ? market.yesPrice : market.noPrice;
+    const statusRaw = market.status?.toLowerCase() ?? "";
+    const isResolved = market.expired === true || statusRaw.includes("resolved") || statusRaw.includes("closed");
+    const winningSide =
+      market.winningOutcomeIndex === 0 ? "yes" :
+      market.winningOutcomeIndex === 1 ? "no" :
+      null;
+    const isWinner = winningSide === bucket.side;
+
+    if (remainingShares > 0 && !isResolved) {
+      const hasVerifiedPricing = hasVerifiedAmmPrice(currentPrice);
+      const marketValue = hasVerifiedPricing ? remainingShares * currentPrice : 0;
+      const unrealized = hasVerifiedPricing ? marketValue - remainingCost : 0;
+
+      active.push({
+        id: `${market.id}:${bucket.side}`,
+        marketId: market.id,
+        marketSlug: market.slug,
+        marketTitle: market.title,
+        side: bucket.side,
+        status: "active",
+        costUsdc: formatDecimalString(remainingCost),
+        marketValueUsdc: hasVerifiedPricing ? formatDecimalString(marketValue) : "0",
+        unrealizedPnlUsdc: hasVerifiedPricing ? formatDecimalString(unrealized) : "0",
+        realizedPnlUsdc: "0",
+        claimable: false,
+        tokenBalance: formatDecimalString(remainingShares),
+        currentPrice: hasVerifiedPricing ? currentPrice : undefined,
+        hasVerifiedPricing,
+        endsAt: market.endsAt
+      });
+    }
+
+    if (remainingShares > 0 && isResolved) {
+      const redeemableUsdc = isWinner ? remainingShares : 0;
+      settled.push({
+        id: `${market.id}:${bucket.side}`,
+        marketId: market.id,
+        marketSlug: market.slug,
+        marketTitle: market.title,
+        side: bucket.side,
+        status: "settled",
+        costUsdc: formatDecimalString(remainingCost),
+        marketValueUsdc: formatDecimalString(redeemableUsdc),
+        unrealizedPnlUsdc: "0",
+        realizedPnlUsdc: isWinner ? "0" : formatDecimalString(-remainingCost),
+        claimable: isWinner,
+        tokenBalance: formatDecimalString(remainingShares),
+        currentPrice: isWinner ? 1 : 0,
+        hasVerifiedPricing: true,
+        endsAt: market.endsAt
+      });
+    }
+
+    const shouldAddExitHistory =
+      (bucket.hadSell || bucket.hadRedeem) &&
+      (remainingShares === 0 || remainingShares < MIN_VISIBLE_ACTIVE_SHARES || bucket.hadRedeem);
+
+    if (shouldAddExitHistory) {
+      const exitCost = bucket.hadRedeem && remainingShares === 0 ? totalCost : exitedCost;
+      const realizedPnl = bucket.proceedsUsdc - exitCost;
+
+      settled.push({
+        id: `${market.id}:${bucket.side}:exit`,
+        marketId: market.id,
+        marketSlug: market.slug,
+        marketTitle: market.title,
+        side: bucket.side,
+        status: "settled",
+        costUsdc: formatDecimalString(exitCost),
+        marketValueUsdc: formatDecimalString(bucket.proceedsUsdc),
+        unrealizedPnlUsdc: "0",
+        realizedPnlUsdc: formatDecimalString(realizedPnl),
+        claimable: false,
+        tokenBalance: "0",
+        currentPrice: hasVerifiedAmmPrice(currentPrice) ? currentPrice : undefined,
+        hasVerifiedPricing: hasVerifiedAmmPrice(currentPrice),
+        endsAt: market.endsAt,
+        isSold: bucket.hadSell
+      });
+    }
+  }
+
+  active.sort((left, right) => parseTimestampMs(right.endsAt) - parseTimestampMs(left.endsAt));
+  settled.sort((left, right) => parseTimestampMs(right.endsAt) - parseTimestampMs(left.endsAt));
+
+  return {
+    ...createPortfolioSnapshot(account, active, prunePlaceholderSettledPositions(settled)),
+    fetchedAt: new Date().toISOString()
+  };
+}
+
 function formatDecimalString(value: number) {
   if (!Number.isFinite(value)) {
     return "0";
@@ -2420,8 +2875,11 @@ export async function GET(request: Request) {
   const cachedSnapshot = await readCachedPositionsSnapshot(account, snapshotCacheClient);
   const cachedSnapshotAgeMs = getSnapshotAgeMs(cachedSnapshot);
 
-  if (!forceFresh && cachedSnapshot && cachedSnapshotAgeMs <= FAST_SNAPSHOT_MAX_AGE_MS) {
-    headers.set("X-Positions-Cache", "fast-hit");
+  if (!forceFresh && cachedSnapshot && cachedSnapshotAgeMs <= STALE_SNAPSHOT_MAX_AGE_MS) {
+    headers.set(
+      "X-Positions-Cache",
+      cachedSnapshotAgeMs <= FAST_SNAPSHOT_MAX_AGE_MS ? "fast-hit" : "stale-hit"
+    );
     return Response.json(cachedSnapshot, { headers });
   }
 
@@ -2440,24 +2898,74 @@ export async function GET(request: Request) {
     if (auth) authHeaders["Authorization"] = auth;
     if (deviceId) authHeaders["limitless-device-id"] = deviceId;
 
-    // 1. Fetch public API portfolio to get real cost basis
-    // We do this non-blocking and catch errors so it's a best-effort layer over on-chain data
+    // 1. Fetch the public portfolio first. It already contains active positions,
+    // settled positions, market values and cost basis. That is sufficient for
+    // the initial profile render, so we should not block on transfer-history
+    // reconstruction unless the caller explicitly asked for a fresh deep sync or
+    // the public snapshot is empty/degraded.
     const publicPortfolioPromise = fetchPublicPortfolioPositions(account, authHeaders).catch(err => {
       console.warn(`[Positions API] Failed to fetch public portfolio for cost basis:`, err);
       return null;
     });
-
-    // 2. Fetch transfer history once so we can reuse it for both
-    // historical market discovery and fallback cost basis.
-    const historySummaryPromise = fetchTransferHistorySummary(account);
-
-    const [rawPublicPortfolio, rawHistorySummary] = await Promise.all([
-      publicPortfolioPromise,
-      historySummaryPromise
-    ]);
+    const rawPublicPortfolio = await publicPortfolioPromise;
     const hasPublicPositions =
       rawPublicPortfolio !== null &&
       (rawPublicPortfolio.active.length > 0 || rawPublicPortfolio.settled.length > 0);
+
+    if (!forceFresh && rawPublicPortfolio && hasPublicPositions) {
+      headers.set("X-Positions-Source", "public-fast-path");
+      return respondWithSnapshot(rawPublicPortfolio);
+    }
+
+    if (!hasPublicPositions) {
+      try {
+        const historySnapshot = await withTimeout(
+          fetchBlockscoutHistorySnapshot(account as `0x${string}`),
+          12_000,
+          "Blockscout history snapshot"
+        );
+
+        if (historySnapshot.active.length > 0 || historySnapshot.settled.length > 0) {
+          headers.set("X-Positions-Source", "blockscout-history");
+          return respondWithSnapshot(historySnapshot);
+        }
+      } catch (error) {
+        console.warn("[Positions API] Blockscout history snapshot failed:", error);
+      }
+    }
+
+    if (!forceFresh && !hasPublicPositions) {
+      try {
+        const lightSnapshot = await withTimeout(
+          (async () => {
+            const lightMarkets = await fetchAmmMarketsForOnchain([], true);
+            return fetchOnchainAmmPositions(account as `0x${string}`, lightMarkets, {});
+          })(),
+          LIGHT_ONCHAIN_ENRICH_TIMEOUT_MS,
+          "Light on-chain portfolio scan"
+        );
+
+        if (lightSnapshot.active.length > 0) {
+          headers.set("X-Positions-Source", "onchain-light");
+          return respondWithSnapshot(lightSnapshot);
+        }
+      } catch (error) {
+        console.warn("[Positions API] Light on-chain scan failed:", error);
+      }
+    }
+
+    // 2. Only fall back to the heavier history + on-chain reconstruction when
+    // the public snapshot is empty or the client explicitly requested a fresh
+    // deep sync.
+    const rawHistorySummary = await withTimeout(
+      fetchTransferHistorySummary(account),
+      HISTORY_SUMMARY_TIMEOUT_MS,
+      "Transfer history summary"
+    ).catch((error) => {
+      console.warn("[Positions API] Transfer history summary failed:", error);
+      return emptyTransferHistorySummary();
+    });
+
     const shouldFetchOnchain = !hasPublicPositions || rawHistorySummary.fpmmAddresses.length > 0;
     const shouldIncludeCatalog = !hasPublicPositions && rawHistorySummary.fpmmAddresses.length === 0;
     const ammMarkets = shouldFetchOnchain

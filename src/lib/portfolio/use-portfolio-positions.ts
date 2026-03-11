@@ -4,10 +4,11 @@ import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { isAddress } from "viem";
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useAccount } from "wagmi";
 
 export const PORTFOLIO_POSITIONS_STALE_TIME_MS = 15_000;
+const BACKGROUND_FRESH_SYNC_INTERVAL_MS = 60_000;
 
 export function getPortfolioPositionsQueryKey(account: string | null) {
   return ["portfolio-positions", account] as const;
@@ -45,6 +46,7 @@ export function usePortfolioPositions() {
   const { address } = useAccount();
   const { user, isAuthenticated, getAuthHeaders } = useMiniAppAuth();
   const queryClient = useQueryClient();
+  const backgroundFreshSyncRef = useRef<Map<string, number>>(new Map());
   // Portfolio positions belong to the connected wallet, not the auth identity.
   const account = address ?? user?.address ?? null;
   const enabled = Boolean(account && isAuthenticated && isAddress(account));
@@ -74,6 +76,25 @@ export function usePortfolioPositions() {
       return (queryClient.getQueryData(queryKey) as PortfolioPositionsSnapshot | undefined) ?? null;
     }
   }, [account, enabled, getAuthHeaders, queryClient, queryKey]);
+
+  useEffect(() => {
+    if (!enabled || !account) {
+      return;
+    }
+
+    if (!query.data) {
+      return;
+    }
+
+    const normalizedAccount = account.toLowerCase();
+    const lastFreshSyncAt = backgroundFreshSyncRef.current.get(normalizedAccount) ?? 0;
+    if (Date.now() - lastFreshSyncAt < BACKGROUND_FRESH_SYNC_INTERVAL_MS) {
+      return;
+    }
+
+    backgroundFreshSyncRef.current.set(normalizedAccount, Date.now());
+    void refetch();
+  }, [account, enabled, query.data, query.dataUpdatedAt, refetch]);
 
   return {
     account,

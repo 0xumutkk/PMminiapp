@@ -14,6 +14,12 @@ const nextConfig = {
   async headers() {
     const frameAncestors = [
       "'self'",
+      "https://base.app",
+      "https://*.base.app",
+      "https://base.dev",
+      "https://*.base.dev",
+      "https://base.org",
+      "https://*.base.org",
       "https://warpcast.com",
       "https://*.warpcast.com",
       "https://farcaster.xyz",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useDeferredValue, useMemo, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { MarketSnapshot } from "@/lib/market-types";
 import {
@@ -14,6 +14,8 @@ import { useQuery } from "@tanstack/react-query";
 import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import { useAccount } from "wagmi";
+
+const VISIBLE_MARKETS_STEP = 24;
 
 function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
@@ -75,10 +77,14 @@ export function MarketsBrowser() {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [activeCategory, setActiveCategory] = useState<MarketCategoryFilter>("all");
+  const [visibleCount, setVisibleCount] = useState(VISIBLE_MARKETS_STEP);
 
   const marketsQuery = useQuery({
     queryKey: ["markets", "snapshot"],
-    queryFn: fetchMarketsSnapshot
+    queryFn: fetchMarketsSnapshot,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false
   });
 
   const { snapshot } = usePortfolioPositions();
@@ -112,6 +118,40 @@ export function MarketsBrowser() {
       return matchesQuery && matchesCategory;
     });
   }, [activeCategory, deferredQuery, markets]);
+
+  useEffect(() => {
+    setVisibleCount(VISIBLE_MARKETS_STEP);
+  }, [activeCategory, deferredQuery]);
+
+  const activePositionLookup = useMemo(() => {
+    const lookup = new Map<string, PortfolioPositionBadge>();
+    for (const position of snapshot?.active ?? []) {
+      const keys = [position.marketSlug, position.marketId]
+        .map((value) => value.trim().toLowerCase())
+        .filter((value) => value.length > 0);
+
+      for (const key of keys) {
+        lookup.set(key, {
+          side: position.side
+        });
+      }
+    }
+
+    return lookup;
+  }, [snapshot?.active]);
+
+  const visibleMarkets = useMemo(
+    () => filteredMarkets.slice(0, visibleCount),
+    [filteredMarkets, visibleCount]
+  );
+
+  const hasMoreMarkets = filteredMarkets.length > visibleMarkets.length;
+
+  const showMore = () => {
+    startTransition(() => {
+      setVisibleCount((current) => current + VISIBLE_MARKETS_STEP);
+    });
+  };
 
   return (
     <div className="market-browser">
@@ -155,60 +195,78 @@ export function MarketsBrowser() {
         ) : filteredMarkets.length === 0 ? (
           <p className="state-text">No matches found.</p>
         ) : (
-          filteredMarkets.map((market) => (
-            <Link
-              key={market.id}
-              href={`/feed?startAt=${encodeURIComponent(market.id)}`}
-              className="explore-card"
-            >
-              <div className="explore-card__inset-shadow" />
-              <div className="explore-card__header">
-                <img
-                  src={market.imageUrl || "/icon.png"}
-                  className="explore-card__token"
-                  alt=""
-                />
-                <div className="explore-card__title-row">
-                  <h3 className="explore-card__title">{market.title}</h3>
-                  <span className="explore-card__prob">{formatPercent(market.yesPrice)}</span>
-                </div>
-              </div>
+          <>
+            {visibleMarkets.map((market) => {
+              const venueAddr = market.tradeVenue?.venueExchange?.toLowerCase();
+              const pos =
+                !snapshot || !isAuthenticated || !isConnected
+                  ? null
+                  : activePositionLookup.get(market.id.toLowerCase()) ??
+                    (venueAddr ? activePositionLookup.get(venueAddr) : undefined) ??
+                    (market.tradeVenue?.marketRef ? activePositionLookup.get(market.tradeVenue.marketRef.toLowerCase()) : undefined) ??
+                    null;
 
-              {(() => {
-                if (!snapshot || !isAuthenticated || !isConnected) return null;
-                const venueAddr = market.tradeVenue?.venueExchange?.toLowerCase();
-
-                const pos = snapshot.active.find(p =>
-                  p.marketSlug === market.id ||
-                  p.marketId === market.id ||
-                  (venueAddr && p.marketId.toLowerCase() === venueAddr)
-                );
-                if (!pos) return null;
-                return (
-                  <div style={{ padding: '0 12px' }}>
-                    <div className={`explore-card__position-badge explore-card__position-badge--${pos.side}`}>
-                      <span>
-                        {pos.side === 'yes' ? '👍' : '👎'} {pos.side.toUpperCase()} POSITION
-                      </span>
+              return (
+                <Link
+                  key={market.id}
+                  href={`/feed?startAt=${encodeURIComponent(market.id)}`}
+                  className="explore-card"
+                >
+                  <div className="explore-card__inset-shadow" />
+                  <div className="explore-card__header">
+                    <img
+                      src={market.imageUrl || "/icon.png"}
+                      className="explore-card__token"
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                    />
+                    <div className="explore-card__title-row">
+                      <h3 className="explore-card__title">{market.title}</h3>
+                      <span className="explore-card__prob">{formatPercent(market.yesPrice)}</span>
                     </div>
                   </div>
-                );
-              })()}
 
-              <div className="explore-card__stats">
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <div className="explore-card__trending">
-                    <span>{marketCategoryLabel(inferMarketCategoryId(market.title, market.categories, market.tags))}</span>
+                  {pos ? (
+                    <div style={{ padding: '0 12px' }}>
+                      <div className={`explore-card__position-badge explore-card__position-badge--${pos.side}`}>
+                        <span>
+                          {pos.side === 'yes' ? '👍' : '👎'} {pos.side.toUpperCase()} POSITION
+                        </span>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="explore-card__stats">
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <div className="explore-card__trending">
+                        <span>{marketCategoryLabel(inferMarketCategoryId(market.title, market.categories, market.tags))}</span>
+                      </div>
+                      <div className="explore-card__ends-badge">
+                        <span>Ends {formatEndsAt(market.endsAt)}</span>
+                      </div>
+                    </div>
                   </div>
-                  <div className="explore-card__ends-badge">
-                    <span>Ends {formatEndsAt(market.endsAt)}</span>
-                  </div>
-                </div>
-              </div>
-            </Link>
-          ))
+                </Link>
+              );
+            })}
+
+            {hasMoreMarkets ? (
+              <button
+                type="button"
+                onClick={showMore}
+                className="explore-load-more"
+              >
+                Show {Math.min(VISIBLE_MARKETS_STEP, filteredMarkets.length - visibleMarkets.length)} More
+              </button>
+            ) : null}
+          </>
         )}
       </div>
     </div>
   );
 }
+
+type PortfolioPositionBadge = {
+  side: "yes" | "no";
+};

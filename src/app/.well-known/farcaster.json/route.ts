@@ -27,6 +27,11 @@ type MiniAppFrameManifest = {
   noindex?: boolean;
 };
 
+type BaseBuilderManifest = {
+  ownerAddress?: string;
+  allowedAddresses?: string[];
+};
+
 function toAccountAssociation(value: unknown): AccountAssociation | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
@@ -95,6 +100,25 @@ function parseList(raw: string | undefined): string[] | undefined {
     .filter((value) => value.length > 0);
 
   return values.length > 0 ? values : undefined;
+}
+
+function parseBaseBuilder(): BaseBuilderManifest | undefined {
+  const ownerAddress =
+    process.env.BASE_BUILDER_OWNER_ADDRESS?.trim() ||
+    process.env.NEXT_PUBLIC_BASE_BUILDER_OWNER_ADDRESS?.trim() ||
+    undefined;
+  const allowedAddresses =
+    parseList(process.env.BASE_BUILDER_ALLOWED_ADDRESSES) ??
+    parseList(process.env.NEXT_PUBLIC_BASE_BUILDER_ALLOWED_ADDRESSES);
+
+  if (!ownerAddress && !allowedAddresses?.length) {
+    return undefined;
+  }
+
+  return {
+    ownerAddress: ownerAddress ?? allowedAddresses?.[0],
+    allowedAddresses
+  };
 }
 
 function parseBoolean(raw: string | undefined): boolean | undefined {
@@ -277,6 +301,7 @@ export async function GET(request: Request) {
 
   const manifest = {
     accountAssociation: parseAccountAssociation(),
+    baseBuilder: parseBaseBuilder(),
     miniapp: frame,
     frame
   };

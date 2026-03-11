@@ -1605,8 +1605,8 @@ body {
 
 .explore-card {
   position: relative;
-  backdrop-filter: blur(50px);
-  -webkit-backdrop-filter: blur(50px);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   background: var(--surface-white-quaternary);
   border: 1.33px solid var(--stroke-white-secondary);
   border-radius: 24px;
@@ -1618,6 +1618,9 @@ body {
   text-decoration: none;
   color: inherit;
   overflow: hidden;
+  content-visibility: auto;
+  contain-intrinsic-size: 176px;
+  contain: layout paint style;
 }
 
 .explore-card__inset-shadow {
@@ -1717,6 +1720,18 @@ body {
   font-size: 11px;
   color: var(--text-white-tertiary);
   text-transform: uppercase;
+}
+
+.explore-load-more {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+  font-family: "Open Runde", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
 }
 
 /* Profile Page Styles */

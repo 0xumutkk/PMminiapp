@@ -89,7 +89,7 @@ function errorToMessage(error: unknown): string {
   }
 
   if (message.toLowerCase().includes("valid fid") || message.toLowerCase().includes("fid is required")) {
-    return "Sign in requires a Farcaster account. Open this app from the Base App (Warpcast) while logged in to your Farcaster account. Base Build preview may not support sign-in.";
+    return "Sign in requires a Farcaster account. Open this app from Base App while logged in to your Farcaster account. Some preview tools may not support sign-in.";
   }
 
   if (message.toLowerCase().includes("invalid_nonce") || message.toLowerCase().includes("nonce")) {

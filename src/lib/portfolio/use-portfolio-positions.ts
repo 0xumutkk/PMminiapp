@@ -7,7 +7,13 @@ import { isAddress } from "viem";
 import { useCallback } from "react";
 import { useAccount } from "wagmi";
 
-async function fetchPortfolioPositions(
+export const PORTFOLIO_POSITIONS_STALE_TIME_MS = 15_000;
+
+export function getPortfolioPositionsQueryKey(account: string | null) {
+  return ["portfolio-positions", account] as const;
+}
+
+export async function fetchPortfolioPositions(
   account: string,
   authHeaders: Record<string, string>,
   fresh = false
@@ -42,7 +48,7 @@ export function usePortfolioPositions() {
   // Portfolio positions belong to the connected wallet, not the auth identity.
   const account = address ?? user?.address ?? null;
   const enabled = Boolean(account && isAuthenticated && isAddress(account));
-  const queryKey = ["portfolio-positions", account] as const;
+  const queryKey = getPortfolioPositionsQueryKey(account);
 
   const query = useQuery({
     queryKey,
@@ -50,7 +56,7 @@ export function usePortfolioPositions() {
     enabled,
     refetchInterval: enabled ? 20_000 : false,
     placeholderData: (previousData) => previousData,
-    staleTime: 15_000,
+    staleTime: PORTFOLIO_POSITIONS_STALE_TIME_MS,
     retry: 0
   });
 

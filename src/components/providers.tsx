@@ -6,6 +6,7 @@ import { WagmiProvider } from "wagmi";
 import { wagmiConfig } from "@/lib/wagmi";
 import { useMiniAppReady } from "@/lib/use-farcaster-ready";
 import { MiniAppAuthProvider } from "@/components/miniapp-auth-provider";
+import { ProfileDataPrefetcher } from "@/components/profile-data-prefetcher";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,7 +29,10 @@ export function AppProviders({ children }: PropsWithChildren) {
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
         <FrameBoot />
-        <MiniAppAuthProvider>{children}</MiniAppAuthProvider>
+        <MiniAppAuthProvider>
+          <ProfileDataPrefetcher />
+          {children}
+        </MiniAppAuthProvider>
       </QueryClientProvider>
     </WagmiProvider>
   );

@@ -1,7 +1,11 @@
 import { buildTradeIntent } from "@/lib/trade/build-intent";
+import * as portfolioPositionsRoute from "@/app/api/portfolio/positions/route";
 import { getMarketIndexer } from "@/lib/indexer";
 import { Market } from "@/lib/market-types";
-import { fetchPublicPortfolioPositions } from "@/lib/portfolio/limitless-portfolio";
+import {
+  fetchPublicPortfolioPositions,
+  type PortfolioPositionsSnapshot
+} from "@/lib/portfolio/limitless-portfolio";
 import { fetchOnchainAmmPositions, getConditionalTokensAddress, fetchFpmmAddressesFromHistory } from "@/lib/portfolio/onchain-portfolio";
 import type { AmmMarketRef } from "@/lib/portfolio/onchain-portfolio";
 import { TradeIntentAction, TradeIntentRequest, TradeIntentResponse } from "@/lib/trade/trade-types";
@@ -329,6 +333,47 @@ function buildFallbackAmmMarkets(
   }
 
   return markets;
+}
+
+function isPortfolioSnapshot(value: unknown): value is PortfolioPositionsSnapshot {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<PortfolioPositionsSnapshot>;
+  return Array.isArray(candidate.active) && Array.isArray(candidate.settled);
+}
+
+async function fetchPortfolioSnapshotForRedeem(
+  request: Request,
+  walletAddress: `0x${string}`
+): Promise<PortfolioPositionsSnapshot | null> {
+  const forwardedHeaders = new Headers();
+  const auth = request.headers.get("Authorization");
+  const deviceId = request.headers.get("limitless-device-id");
+  if (auth) forwardedHeaders.set("Authorization", auth);
+  if (deviceId) forwardedHeaders.set("limitless-device-id", deviceId);
+
+  const fetchSnapshot = async (fresh: boolean) => {
+    const portfolioUrl = new URL(request.url);
+    portfolioUrl.pathname = "/api/portfolio/positions";
+    portfolioUrl.searchParams.set("account", walletAddress);
+    if (fresh) {
+      portfolioUrl.searchParams.set("fresh", "1");
+    } else {
+      portfolioUrl.searchParams.delete("fresh");
+    }
+
+    const portfolioRequest = new Request(portfolioUrl, {
+      headers: forwardedHeaders
+    });
+    const portfolioResponse = await portfolioPositionsRoute.GET(portfolioRequest);
+    const portfolioBody = (await portfolioResponse.json().catch(() => null)) as unknown;
+
+    return portfolioResponse.ok && isPortfolioSnapshot(portfolioBody) ? portfolioBody : null;
+  };
+
+  return (await fetchSnapshot(false)) ?? (await fetchSnapshot(true));
 }
 
 function parseHostCandidate(raw: string | null | undefined) {
@@ -735,11 +780,47 @@ export async function POST(request: Request) {
       const marketMatchCandidates = buildMarketMatchCandidates(marketId, market);
 
       // Redeem action: find a claimable settled position.
-      // 1. Try Limitless portfolio API first.
-      let snapshot = await fetchPublicPortfolioPositions(verifiedWalletAddress);
+      // 1. Try Limitless portfolio API first, but treat it as best-effort.
+      let snapshot = await fetchPublicPortfolioPositions(verifiedWalletAddress).catch(() => ({
+        account: verifiedWalletAddress as `0x${string}`,
+        fetchedAt: new Date().toISOString(),
+        active: [],
+        settled: [],
+        totals: {
+          activeMarketValueUsdc: "0",
+          unrealizedPnlUsdc: "0",
+          claimableUsdc: "0"
+        }
+      }));
+      let claimablePosition = snapshot.settled.find(
+        (position) =>
+          matchesPositionMarketCandidates(position, marketMatchCandidates) &&
+          position.side === side &&
+          position.claimable
+      );
 
-      // 2. If no settled positions from API, fall back to on-chain lookup.
-      if (snapshot.settled.length === 0) {
+      // 2. If the public portfolio cannot find the claimable position, ask the
+      // portfolio positions route for the same synthesized snapshot used by the
+      // profile screen. This keeps redeem intent aligned with what the user sees.
+      if (!claimablePosition) {
+        const portfolioSnapshot = await fetchPortfolioSnapshotForRedeem(
+          request,
+          verifiedWalletAddress as `0x${string}`
+        );
+
+        if (portfolioSnapshot) {
+          snapshot = portfolioSnapshot;
+          claimablePosition = snapshot.settled.find(
+            (position) =>
+              matchesPositionMarketCandidates(position, marketMatchCandidates) &&
+              position.side === side &&
+              position.claimable
+          );
+        }
+      }
+
+      // 3. Final fallback: direct on-chain lookup over historical FPMMs.
+      if (!claimablePosition && snapshot.settled.length === 0) {
         const historyAddresses = await fetchFpmmAddressesFromHistory(verifiedWalletAddress);
         const ammMarkets = buildFallbackAmmMarkets(historyAddresses, market);
 
@@ -748,16 +829,14 @@ export async function POST(request: Request) {
             verifiedWalletAddress as `0x${string}`,
             ammMarkets
           );
+          claimablePosition = snapshot.settled.find(
+            (position) =>
+              matchesPositionMarketCandidates(position, marketMatchCandidates) &&
+              position.side === side &&
+              position.claimable
+          );
         }
       }
-
-      // 3. Find claimable settled position — try slug match first, then side-only.
-      const claimablePosition = snapshot.settled.find(
-        (position) =>
-          matchesPositionMarketCandidates(position, marketMatchCandidates) &&
-          position.side === side &&
-          position.claimable
-      );
 
       if (!claimablePosition) {
         return Response.json(

@@ -2173,8 +2173,8 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
       const unrealized = hasVerifiedPricing ? marketValue - remainingCost : 0;
 
       active.push({
-        id: `${market.id}:${bucket.side}`,
-        marketId: market.id,
+        id: `${market.contractAddress}:${bucket.side}`,
+        marketId: market.contractAddress,
         marketSlug: market.slug,
         marketTitle: market.title,
         side: bucket.side,
@@ -2194,8 +2194,8 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
     if (remainingShares > 0 && isResolved) {
       const redeemableUsdc = isWinner ? remainingShares : 0;
       settled.push({
-        id: `${market.id}:${bucket.side}`,
-        marketId: market.id,
+        id: `${market.contractAddress}:${bucket.side}`,
+        marketId: market.contractAddress,
         marketSlug: market.slug,
         marketTitle: market.title,
         side: bucket.side,
@@ -2221,8 +2221,8 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
       const realizedPnl = bucket.proceedsUsdc - exitCost;
 
       settled.push({
-        id: `${market.id}:${bucket.side}:exit`,
-        marketId: market.id,
+        id: `${market.contractAddress}:${bucket.side}:exit`,
+        marketId: market.contractAddress,
         marketSlug: market.slug,
         marketTitle: market.title,
         side: bucket.side,

@@ -68,7 +68,11 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
   const router = useRouter();
   const [interactionError, setInteractionError] = useState<string | null>(null);
   const [activeActionId, setActiveActionId] = useState<string | null>(null);
-  const error = interactionError ?? queryError;
+  const error = interactionError ?? state.error ?? queryError;
+  const tradeNotice =
+    !error && (isBusy || state.status === "submitted" || state.status === "confirmed")
+      ? statusLabel
+      : null;
 
   useEffect(() => {
     if (!account || !isAuthenticated) return;
@@ -132,6 +136,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     if (!isConnected || !account) return;
     setActiveActionId(position.id);
     try {
+      setInteractionError(null);
       await executeIntent({
         action: "redeem",
         marketId: position.marketSlug || position.marketId,
@@ -149,6 +154,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     return (
       <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
+        {tradeNotice && <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '12px', padding: '0 4px' }}>{tradeNotice}</p>}
         {activePositions.length > 0 ? (
           activePositions.map((position) => {
             const prob = parseProbability(position.currentPrice);
@@ -227,6 +233,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     return (
       <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
+        {tradeNotice && <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '12px', padding: '0 4px' }}>{tradeNotice}</p>}
         {closedPositions.length > 0 ? (
           closedPositions.map((position) => {
             const isRedeemed = Number(position.currentPrice) > 0 && Number(position.tokenBalance) === 0 && position.status === "settled" && !(position as any).isSold;
@@ -320,6 +327,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
   return (
     <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
       {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
+      {tradeNotice && <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '12px', padding: '0 4px' }}>{tradeNotice}</p>}
       {claimableSettledPositions.length > 0 ? (
         claimableSettledPositions.map((position) => (
           <div key={position.id} className="positionDetailCard" style={{ borderColor: 'rgba(11, 213, 45, 0.3)' }}>

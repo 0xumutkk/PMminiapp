@@ -6,6 +6,7 @@ import {
   shouldUseDirectTransactionSubmission
 } from "@/lib/trade/execution-strategy";
 import { extractCallsStatusTxHashes } from "@/lib/trade/calls-status";
+import { matchesSubmittedCall } from "@/lib/trade/submitted-transaction-match";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPublicClient, http } from "viem";
@@ -35,6 +36,11 @@ type TradeState = {
   currentAction: TradeIntentAction | null;
   batchId: string | null;
   txHashes: `0x${string}`[];
+  pendingCalls: Array<{
+    to: `0x${string}`;
+    data: `0x${string}`;
+    value: bigint;
+  }>;
   totalCalls: number;
   submittedCalls: number;
   pendingTrade: ConfirmedTrade | null;
@@ -219,6 +225,7 @@ export function useTradeExecutor() {
     currentAction: null,
     batchId: null,
     txHashes: [],
+    pendingCalls: [],
     totalCalls: 0,
     submittedCalls: 0,
     pendingTrade: null,
@@ -260,43 +267,80 @@ export function useTradeExecutor() {
     }
 
     if (status === "success") {
-      const txHashes = extractCallsStatusTxHashes(callsStatus.data);
-      if (txHashes.length === 0) {
+      void (async () => {
+        const txHashes = extractCallsStatusTxHashes(callsStatus.data);
+        if (txHashes.length === 0) {
+          setState((current) => ({
+            ...current,
+            status: "failed",
+            error: "Wallet did not return transaction receipts for the submitted bundle.",
+            totalCalls: 0,
+            submittedCalls: 0,
+            pendingCalls: [],
+            pendingTrade: null
+          }));
+          notifyPositionsRefresh();
+          return;
+        }
+
+        if (state.pendingCalls.length === 1) {
+          const [expectedCall] = state.pendingCalls;
+          const matchedHashes: `0x${string}`[] = [];
+
+          for (const hash of txHashes) {
+            try {
+              const transaction = await confirmationClient.getTransaction({ hash });
+              if (matchesSubmittedCall(transaction, expectedCall, address ?? null)) {
+                matchedHashes.push(hash);
+              }
+            } catch {
+              // Ignore fetch failures here; unmatched hashes are handled below.
+            }
+          }
+
+          if (matchedHashes.length === 0) {
+            setState((current) => ({
+              ...current,
+              status: "failed",
+              error: "Wallet returned a transaction hash that does not match the submitted redeem call.",
+              batchId: null,
+              totalCalls: 0,
+              submittedCalls: 0,
+              txHashes: [],
+              pendingCalls: [],
+              pendingTrade: null
+            }));
+            notifyPositionsRefresh();
+            return;
+          }
+        }
+
+        const confirmedTrade = state.pendingTrade
+          ? {
+            ...state.pendingTrade,
+            confirmedAt: new Date().toISOString()
+          }
+          : null;
+
         setState((current) => ({
           ...current,
-          status: "failed",
-          error: "Wallet did not return transaction receipts for the submitted bundle.",
+          status: "confirmed",
+          error: null,
           totalCalls: 0,
           submittedCalls: 0,
+          txHashes: txHashes.length > 0 ? txHashes : current.txHashes,
+          pendingCalls: [],
+          currentAction: current.pendingTrade?.action ?? current.currentAction,
+          lastConfirmedTrade: confirmedTrade ?? current.lastConfirmedTrade,
           pendingTrade: null
         }));
-        notifyPositionsRefresh();
-        return;
-      }
-      const confirmedTrade = state.pendingTrade
-        ? {
-          ...state.pendingTrade,
-          confirmedAt: new Date().toISOString()
+        applyOptimisticPortfolioUpdate(confirmedTrade);
+        if (confirmedTrade?.action === "redeem") {
+          window.setTimeout(() => notifyPositionsRefresh(), 15_000);
+        } else {
+          notifyPositionsRefresh();
         }
-        : null;
-
-      setState((current) => ({
-        ...current,
-        status: "confirmed",
-        error: null,
-        totalCalls: 0,
-        submittedCalls: 0,
-        txHashes: txHashes.length > 0 ? txHashes : current.txHashes,
-        currentAction: current.pendingTrade?.action ?? current.currentAction,
-        lastConfirmedTrade: confirmedTrade ?? current.lastConfirmedTrade,
-        pendingTrade: null
-      }));
-      applyOptimisticPortfolioUpdate(confirmedTrade);
-      if (confirmedTrade?.action === "redeem") {
-        window.setTimeout(() => notifyPositionsRefresh(), 15_000);
-      } else {
-        notifyPositionsRefresh();
-      }
+      })();
       return;
     }
 
@@ -311,7 +355,7 @@ export function useTradeExecutor() {
         pendingTrade: null
       }));
     }
-  }, [applyOptimisticPortfolioUpdate, callsStatus.data, state.pendingTrade]);
+  }, [address, applyOptimisticPortfolioUpdate, callsStatus.data, confirmationClient, state.pendingCalls, state.pendingTrade]);
 
   const executeIntent = useCallback(
     async (params: ExecuteIntentParams) => {
@@ -333,6 +377,7 @@ export function useTradeExecutor() {
         currentAction: params.action,
         batchId: null,
         txHashes: [],
+        pendingCalls: [],
         totalCalls: 0,
         submittedCalls: 0,
         pendingTrade: null
@@ -423,6 +468,7 @@ export function useTradeExecutor() {
               totalCalls: 1,
               submittedCalls: 1,
               txHashes: [hash],
+              pendingCalls: [],
               pendingTrade
             }));
 
@@ -444,6 +490,7 @@ export function useTradeExecutor() {
               totalCalls: 0,
               submittedCalls: 0,
               txHashes: [hash],
+              pendingCalls: [],
               pendingTrade: null,
               lastConfirmedTrade: {
                 ...pendingTrade,
@@ -478,6 +525,7 @@ export function useTradeExecutor() {
             totalCalls,
             submittedCalls: 0,
             txHashes: [],
+            pendingCalls: calls,
             pendingTrade
           }));
           return;
@@ -493,6 +541,7 @@ export function useTradeExecutor() {
               batchId: null,
               totalCalls,
               submittedCalls: txHashes.length,
+              pendingCalls: calls,
               pendingTrade
             }));
 
@@ -511,6 +560,7 @@ export function useTradeExecutor() {
               batchId: null,
               totalCalls,
               submittedCalls: txHashes.length,
+              pendingCalls: calls,
               txHashes: [...txHashes]
             }));
 
@@ -536,6 +586,7 @@ export function useTradeExecutor() {
             totalCalls: 0,
             submittedCalls: 0,
             txHashes,
+            pendingCalls: [],
             pendingTrade: null,
             lastConfirmedTrade: {
               ...pendingTrade,
@@ -560,6 +611,7 @@ export function useTradeExecutor() {
           batchId: null,
           totalCalls: 0,
           submittedCalls: 0,
+          pendingCalls: [],
           pendingTrade: null
         }));
       }
@@ -586,6 +638,7 @@ export function useTradeExecutor() {
       batchId: null,
       totalCalls: 0,
       submittedCalls: 0,
+      pendingCalls: [],
       pendingTrade: null
     }));
   }, []);

@@ -6,6 +6,7 @@ import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
 import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { isAddress } from "viem";
 
 const REFRESH_EVENT_NAME = "positions:refresh";
 const DEFAULT_SELL_MAX_SLIPPAGE_BPS = 200;
@@ -41,6 +42,15 @@ function parseProbability(value: unknown) {
 function buildFeedHref(marketId: string) {
   const params = new URLSearchParams({ startAt: marketId });
   return `/feed?${params.toString()}`;
+}
+
+function resolveRedeemMarketRef(position: Pick<PortfolioPositionsSnapshot["settled"][number], "marketId" | "marketSlug">) {
+  const marketId = position.marketId.trim();
+  if (isAddress(marketId)) {
+    return marketId;
+  }
+
+  return position.marketSlug || marketId;
 }
 
 async function resolveSellExpectedPrice(position: ActivePosition) {
@@ -141,7 +151,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
       setInteractionError(null);
       await executeIntent({
         action: "redeem",
-        marketId: position.marketSlug || position.marketId,
+        marketId: resolveRedeemMarketRef(position),
         side: position.side,
         amountUsdc: position.marketValueUsdc
       });

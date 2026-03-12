@@ -164,3 +164,72 @@ test("sell action does not fall back to an arbitrary position with the same side
   assert.equal(response.status, 409);
   assert.equal(body.error, "No active position found for this market/side.");
 });
+
+test("redeem action resolves conditionId from the market endpoint and builds CT calldata", { concurrency: false }, async () => {
+  globalThis.fetch = async (input) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+
+    if (url.includes("/portfolio/") && url.includes("/positions")) {
+      return Response.json({
+        clob: [
+          {
+            market: {
+              id: "0x91d3fee86321a6f50b719b8368cf62de44b8e510",
+              slug: "will-opinions-daily-trading-volume-decrease-on-mar-4-vs-mar-3-1772575556256",
+              title: "Will Opinion's daily trading volume decrease on Mar 4 vs Mar 3?",
+              status: "resolved",
+              winning_index: 0,
+              collateral: { decimals: 6 }
+            },
+            tokensBalance: {
+              yes: "151683"
+            },
+            positions: {
+              yes: {
+                cost: "1000000",
+                marketValue: "151683",
+                unrealizedPnl: "0",
+                realisedPnl: "0"
+              }
+            }
+          }
+        ]
+      });
+    }
+
+    if (url.includes("/markets/0x91d3fee86321a6f50b719b8368cf62de44b8e510")) {
+      return Response.json({
+        address: "0x91d3fee86321a6f50b719b8368cf62de44b8e510",
+        slug: "will-opinions-daily-trading-volume-decrease-on-mar-4-vs-mar-3-1772575556256",
+        title: "Will Opinion's daily trading volume decrease on Mar 4 vs Mar 3?",
+        conditionId: "0xdf85d39c37aec82fc3a96ffb44ebc1dcb4fa0346ccb42c3adca2b7c9eeef8718"
+      });
+    }
+
+    throw new Error(`Unexpected fetch call in redeem test: ${url}`);
+  };
+
+  const request = buildRequest({
+    action: "redeem",
+    marketId: "0x91d3fee86321a6f50b719b8368cf62de44b8e510",
+    side: "yes",
+    amountUsdc: "0.151683",
+    walletAddress: TEST_WALLET
+  });
+
+  const response = await POST(request);
+  const body = (await response.json()) as {
+    error?: string;
+    mode?: string;
+    calls?: Array<{ to?: string; data?: string }>;
+  };
+
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(body.mode, "onchain");
+  assert.equal(body.calls?.[0]?.to, "0xC9c98965297Bc527861c898329Ee280632B76e18");
+  assert.equal(
+    body.calls?.[0]?.data,
+    "0x01b7037c000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda029130000000000000000000000000000000000000000000000000000000000000000df85d39c37aec82fc3a96ffb44ebc1dcb4fa0346ccb42c3adca2b7c9eeef87180000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002"
+  );
+});

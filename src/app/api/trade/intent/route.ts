@@ -6,7 +6,13 @@ import {
   fetchPublicPortfolioPositions,
   type PortfolioPositionsSnapshot
 } from "@/lib/portfolio/limitless-portfolio";
-import { fetchOnchainAmmPositions, getConditionalTokensAddress, fetchFpmmAddressesFromHistory } from "@/lib/portfolio/onchain-portfolio";
+import {
+  CONDITIONAL_TOKENS_ADDRESS,
+  fetchOnchainAmmPositions,
+  fetchFpmmAddressesFromHistory,
+  getConditionalTokensAddress,
+  resolveFpmmMetadata
+} from "@/lib/portfolio/onchain-portfolio";
 import type { AmmMarketRef } from "@/lib/portfolio/onchain-portfolio";
 import { TradeIntentAction, TradeIntentRequest, TradeIntentResponse } from "@/lib/trade/trade-types";
 import { logEvent } from "@/lib/observability";
@@ -399,6 +405,98 @@ function parseHostCandidate(raw: string | null | undefined) {
   }
 
   return value;
+}
+
+function normalizeLimitlessApiBaseUrl(rawBaseUrl: string | undefined) {
+  const fallback = "https://api.limitless.exchange";
+  try {
+    const url = new URL(rawBaseUrl ?? fallback);
+    if (url.pathname.endsWith("/api-v1")) {
+      url.pathname = "/";
+    }
+    if (!url.pathname.endsWith("/")) {
+      url.pathname += "/";
+    }
+    return url.toString();
+  } catch {
+    return `${fallback}/`;
+  }
+}
+
+type RedeemMarketMetadata = {
+  fpmmAddress?: `0x${string}`;
+  conditionId?: `0x${string}`;
+  conditionalTokensContract?: `0x${string}`;
+};
+
+async function fetchRedeemMarketMetadata(candidates: Array<string | undefined | null>) {
+  const uniqueCandidates = candidates
+    .map((candidate) => (typeof candidate === "string" ? candidate.trim() : ""))
+    .filter((candidate, index, values) => candidate.length > 0 && values.indexOf(candidate) === index);
+
+  if (uniqueCandidates.length === 0) {
+    return null;
+  }
+
+  const baseUrl = normalizeLimitlessApiBaseUrl(process.env.LIMITLESS_API_BASE_URL);
+  const headers = {
+    Accept: "application/json",
+    Origin: "https://limitless.exchange",
+    Referer: "https://limitless.exchange/",
+    "User-Agent": "Mozilla/5.0"
+  };
+
+  for (const candidate of uniqueCandidates) {
+    try {
+      const response = await fetch(new URL(`markets/${encodeURIComponent(candidate)}`, baseUrl), {
+        headers,
+        cache: "no-store",
+        signal: AbortSignal.timeout(5_000)
+      });
+      if (!response.ok) {
+        continue;
+      }
+
+      const payload = (await response.json()) as Record<string, unknown> | { data?: unknown[] };
+      const row = Array.isArray((payload as { data?: unknown[] }).data)
+        ? (payload as { data?: unknown[] }).data?.[0]
+        : payload;
+
+      if (!row || typeof row !== "object") {
+        continue;
+      }
+
+      const record = row as Record<string, unknown>;
+      const venue =
+        typeof record.venue === "object" && record.venue !== null
+          ? (record.venue as Record<string, unknown>)
+          : undefined;
+      const fpmmAddress =
+        typeof record.address === "string" && isAddress(record.address)
+          ? (record.address as `0x${string}`)
+          : typeof venue?.exchange === "string" && isAddress(venue.exchange)
+            ? (venue.exchange as `0x${string}`)
+            : undefined;
+      const conditionId =
+        typeof record.conditionId === "string" && /^0x[0-9a-fA-F]{64}$/.test(record.conditionId)
+          ? (record.conditionId as `0x${string}`)
+          : undefined;
+
+      if (!fpmmAddress && !conditionId) {
+        continue;
+      }
+
+      return {
+        fpmmAddress,
+        conditionId,
+        conditionalTokensContract: conditionId ? CONDITIONAL_TOKENS_ADDRESS : undefined
+      } satisfies RedeemMarketMetadata;
+    } catch {
+      // Continue to the next candidate.
+    }
+  }
+
+  return null;
 }
 
 function buildDomainCandidates(request: Request, expectedDomain: string, preferredDomain?: string | null) {
@@ -849,34 +947,53 @@ export async function POST(request: Request) {
       let fpmmAddr: `0x${string}` | undefined;
       if (isAddress(claimablePosition.marketId)) {
         fpmmAddr = claimablePosition.marketId as `0x${string}`;
+      } else if (market?.tradeVenue?.venueExchange && isAddress(market.tradeVenue.venueExchange)) {
+        fpmmAddr = market.tradeVenue.venueExchange as `0x${string}`;
       }
 
-      // For AMM markets, redeem uses CT.redeemPositions() not the FPMM.
-      // We need the ConditionalTokens contract address AND the conditionId.
-      if (fpmmAddr) {
-        try {
-          const rpcUrl = process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org";
-          const viemClient = createPublicClient({ chain: base, transport: http(rpcUrl) });
-          const [ctAddr, cid] = await viemClient.multicall({
-            contracts: [
-              { address: fpmmAddr, abi: parseAbi(["function conditionalTokens() view returns (address)"]), functionName: "conditionalTokens" },
-              { address: fpmmAddr, abi: parseAbi(["function conditionIds(uint256) view returns (bytes32)"]), functionName: "conditionIds", args: [0n] }
-            ],
-            allowFailure: false
-          });
-          tradeContract = ctAddr;
-          conditionId = cid as `0x${string}`;
-          conditionalTokensContract = ctAddr;
-        } catch {
-          // Fallback to env-based contract
-          tradeContract =
-            process.env.LIMITLESS_REDEEM_CONTRACT_ADDRESS ??
-            process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
+      tradeContract =
+        claimablePosition.conditionalTokensContract ??
+        undefined;
+      conditionId =
+        claimablePosition.conditionId ??
+        undefined;
+      conditionalTokensContract = tradeContract as `0x${string}` | undefined;
+
+      const marketMetadata = await fetchRedeemMarketMetadata([
+        fpmmAddr,
+        claimablePosition.marketId,
+        claimablePosition.marketSlug,
+        marketId,
+        market?.tradeVenue?.venueExchange,
+        market?.tradeVenue?.marketRef
+      ]);
+
+      if (!fpmmAddr && marketMetadata?.fpmmAddress) {
+        fpmmAddr = marketMetadata.fpmmAddress;
+      }
+      if (!tradeContract && marketMetadata?.conditionalTokensContract) {
+        tradeContract = marketMetadata.conditionalTokensContract;
+        conditionalTokensContract = marketMetadata.conditionalTokensContract;
+      }
+      if (!conditionId && marketMetadata?.conditionId) {
+        conditionId = marketMetadata.conditionId;
+      }
+
+      // Final fallback: read the FPMM directly using the more resilient onchain helper.
+      if ((!tradeContract || !conditionId) && fpmmAddr) {
+        const fpmmMetadata = await resolveFpmmMetadata(fpmmAddr);
+        if (fpmmMetadata) {
+          tradeContract = fpmmMetadata.ctAddress;
+          conditionalTokensContract = fpmmMetadata.ctAddress;
+          conditionId = fpmmMetadata.conditionId;
         }
-      } else {
-        tradeContract =
-          process.env.LIMITLESS_REDEEM_CONTRACT_ADDRESS ??
-          process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
+      }
+
+      if (!tradeContract || !conditionId) {
+        return Response.json(
+          { error: "Could not resolve redeem metadata for this market.", requestId },
+          { status: 409, headers: rateHeaders }
+        );
       }
 
       functionSignature = process.env.LIMITLESS_REDEEM_FUNCTION_SIGNATURE;

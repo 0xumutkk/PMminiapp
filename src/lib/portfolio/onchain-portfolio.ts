@@ -54,6 +54,8 @@ export type AmmMarketRef = {
     status?: string;
     expired?: boolean;
     winningOutcomeIndex?: 0 | 1 | null;
+    conditionId?: `0x${string}`;
+    conditionalTokensContract?: `0x${string}`;
 };
 
 export type PositionCostBasisEntry = {
@@ -67,7 +69,8 @@ export type PositionCostBasisEntry = {
 };
 
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
-const CT_ADDRESS = "0xC9c98965297Bc527861c898329Ee280632B76e18";
+export const CONDITIONAL_TOKENS_ADDRESS = "0xC9c98965297Bc527861c898329Ee280632B76e18" as const;
+const CT_ADDRESS = CONDITIONAL_TOKENS_ADDRESS;
 const CT_ADDRESS_LOWER = CT_ADDRESS.toLowerCase();
 
 function createViemClient() {
@@ -226,6 +229,13 @@ async function getFpmmPositionIds(
     } catch {
         return null;
     }
+}
+
+export async function resolveFpmmMetadata(
+    fpmmAddress: `0x${string}`
+): Promise<{ ctAddress: `0x${string}`; conditionId: `0x${string}`; yesId: bigint; noId: bigint } | null> {
+    const client = createViemClient();
+    return getFpmmPositionIds(fpmmAddress, client);
 }
 
 export async function getConditionalTokensAddress(
@@ -424,7 +434,7 @@ export async function fetchOnchainAmmPositions(
     } catch { /* non-fatal */ }
 
     for (let i = 0; i < withIds.length; i++) {
-        const { market } = withIds[i];
+        const { market, ids } = withIds[i];
         const yesResult = results[i * 2];
         const noResult = results[i * 2 + 1];
 
@@ -486,6 +496,8 @@ export async function fetchOnchainAmmPositions(
                     tokenBalance: formatUsdc(shares),
                     currentPrice: payoutRatio,
                     hasVerifiedPricing: true,
+                    conditionId: isWinner ? ids.conditionId : undefined,
+                    conditionalTokensContract: isWinner ? ids.ctAddress : undefined,
                     endsAt: market.endsAt
                 });
             } else {
@@ -514,6 +526,8 @@ export async function fetchOnchainAmmPositions(
                     tokenBalance: formatUsdc(shares),
                     currentPrice: hasVerifiedPrice ? price : undefined,
                     hasVerifiedPricing: hasVerifiedPrice,
+                    conditionId: ids.conditionId,
+                    conditionalTokensContract: ids.ctAddress,
                     endsAt: market.endsAt
                 });
             }

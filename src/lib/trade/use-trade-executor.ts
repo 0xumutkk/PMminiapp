@@ -5,6 +5,7 @@ import { getPortfolioPositionsQueryKey } from "@/lib/portfolio/use-portfolio-pos
 import {
   shouldUseDirectTransactionSubmission
 } from "@/lib/trade/execution-strategy";
+import { extractCallsStatusTxHashes } from "@/lib/trade/calls-status";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPublicClient, http } from "viem";
@@ -258,10 +259,19 @@ export function useTradeExecutor() {
     }
 
     if (status === "success") {
-      const txHashes =
-        callsStatus.data?.receipts
-          ?.map((receipt) => receipt.transactionHash as `0x${string}`)
-          .filter((hash) => typeof hash === "string" && hash.startsWith("0x")) ?? [];
+      const txHashes = extractCallsStatusTxHashes(callsStatus.data);
+      if (txHashes.length === 0) {
+        setState((current) => ({
+          ...current,
+          status: "failed",
+          error: "Wallet did not return transaction receipts for the submitted bundle.",
+          totalCalls: 0,
+          submittedCalls: 0,
+          pendingTrade: null
+        }));
+        notifyPositionsRefresh();
+        return;
+      }
       const confirmedTrade = state.pendingTrade
         ? {
           ...state.pendingTrade,
@@ -455,7 +465,8 @@ export function useTradeExecutor() {
             account: address,
             chainId,
             calls,
-            forceAtomic: true
+            experimental_fallback: true,
+            forceAtomic: totalCalls > 1
           });
 
           setState((current) => ({

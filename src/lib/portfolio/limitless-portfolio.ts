@@ -22,6 +22,9 @@ export type TrackedPosition = {
   hasVerifiedPricing?: boolean;
   /** The date when the market ends/ended. */
   endsAt?: string;
+  /** Optional redeem metadata for settled AMM positions. */
+  conditionId?: `0x${string}`;
+  conditionalTokensContract?: `0x${string}`;
   /** Internal UI hint for historical positions closed via sell rather than resolution/redeem. */
   isSold?: boolean;
 };

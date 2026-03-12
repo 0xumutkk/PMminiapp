@@ -1165,6 +1165,10 @@ async function fetchAmmMarketsForOnchain(
 
     const rawPositionIds = r.positionIds;
     const prices = Array.isArray(r.prices) ? r.prices : [];
+    const conditionId =
+      typeof r.conditionId === "string" && /^0x[0-9a-fA-F]{64}$/.test(r.conditionId)
+        ? (r.conditionId as `0x${string}`)
+        : undefined;
 
     if (!slug || !address || !Array.isArray(rawPositionIds) || rawPositionIds.length < 2) continue;
 
@@ -1206,6 +1210,8 @@ async function fetchAmmMarketsForOnchain(
           typeof r.winningOutcomeIndex === "number" && (r.winningOutcomeIndex === 0 || r.winningOutcomeIndex === 1)
             ? r.winningOutcomeIndex
             : null,
+        conditionId,
+        conditionalTokensContract: conditionId ? CT_ADDRESS : undefined,
         endsAt: String(
           r.endsAt ??
           r.ends_at ??
@@ -1278,6 +1284,10 @@ async function fetchAmmMarketsForOnchain(
         }
         if (row.winningOutcomeIndex === 0 || row.winningOutcomeIndex === 1) {
           m.winningOutcomeIndex = row.winningOutcomeIndex;
+        }
+        if (typeof row.conditionId === "string" && /^0x[0-9a-fA-F]{64}$/.test(row.conditionId)) {
+          m.conditionId = row.conditionId as `0x${string}`;
+          m.conditionalTokensContract = CT_ADDRESS;
         }
         if (Array.isArray(row.positionIds) && row.positionIds.length >= 2) {
           const yes = String(row.positionIds[0] ?? "").trim();
@@ -2187,6 +2197,8 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
         tokenBalance: formatDecimalString(remainingShares),
         currentPrice: hasVerifiedPricing ? currentPrice : undefined,
         hasVerifiedPricing,
+        conditionId: market.conditionId,
+        conditionalTokensContract: market.conditionalTokensContract,
         endsAt: market.endsAt
       });
     }
@@ -2208,6 +2220,8 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
         tokenBalance: formatDecimalString(remainingShares),
         currentPrice: isWinner ? 1 : 0,
         hasVerifiedPricing: true,
+        conditionId: isWinner ? market.conditionId : undefined,
+        conditionalTokensContract: isWinner ? market.conditionalTokensContract : undefined,
         endsAt: market.endsAt
       });
     }

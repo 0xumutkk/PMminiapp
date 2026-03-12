@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 
 // List of geo-blocked countries (ISO 3166-1 alpha-2 codes)
 // Turkey (TR), Iran (IR), North Korea (KP), Syria (SY), Cuba (CU), etc.
-const BLOCKED_COUNTRIES = ["IR", "KP", "SY", "CU", "CN", "AF", "RU", "BY"];
+const BLOCKED_COUNTRIES = ["TR", "IR", "KP", "SY", "CU", "CN", "AF", "RU", "BY"];
 const PUBLIC_DISCOVERY_PREFIXES = ["/.well-known", "/metadata", "/meta-tags"];
 const PUBLIC_DISCOVERY_API_PREFIXES = ["/api/metadata"];
 

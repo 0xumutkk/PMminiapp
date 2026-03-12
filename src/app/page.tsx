@@ -1,5 +1,5 @@
-import MarketsPage from "./markets/page";
+import FeedPage from "./feed/page";
 
 export default function HomePage() {
-  return <MarketsPage />;
+  return <FeedPage />;
 }

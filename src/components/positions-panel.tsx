@@ -97,8 +97,14 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     () => filterVisibleActivePositions(snapshot?.active ?? [], snapshot?.settled ?? []),
     [snapshot?.active, snapshot?.settled]
   );
-  const closedPositions = useMemo(() => snapshot?.settled.filter((item) => !item.claimable) ?? [], [snapshot?.settled]);
-  const claimableSettledPositions = useMemo(() => snapshot?.settled.filter((item) => item.claimable) ?? [], [snapshot?.settled]);
+  const closedPositions = useMemo(
+    () => snapshot?.settled.filter((item) => item.isSold === true || !item.claimable) ?? [],
+    [snapshot?.settled]
+  );
+  const claimableSettledPositions = useMemo(
+    () => snapshot?.settled.filter((item) => item.claimable && item.isSold !== true) ?? [],
+    [snapshot?.settled]
+  );
 
   useEffect(() => {
     if (!loading && activePositions.length > 0 && typeof window !== 'undefined') {

@@ -1743,7 +1743,7 @@ function stabilizeSnapshotWithCache(
   const settled = [...snapshot.settled];
   const settledIndexByKey = new Map<string, number>();
   settled.forEach((position, index) => {
-    for (const key of buildPositionLookupKeys(position)) {
+    for (const key of buildSettledLookupKeys(position)) {
       settledIndexByKey.set(key, index);
     }
   });
@@ -1777,8 +1777,9 @@ function stabilizeSnapshotWithCache(
   }
 
   for (const cachedPosition of cachedSnapshot.settled) {
-    const keys = buildPositionLookupKeys(cachedPosition);
-    if (keys.some((key) => activeKeys.has(key))) {
+    const baseKeys = buildPositionLookupKeys(cachedPosition);
+    const keys = buildSettledLookupKeys(cachedPosition);
+    if (baseKeys.some((key) => activeKeys.has(key))) {
       continue;
     }
 
@@ -1786,7 +1787,7 @@ function stabilizeSnapshotWithCache(
     if (existingKey) {
       const index = settledIndexByKey.get(existingKey)!;
       settled[index] = mergeCachedSettledPosition(settled[index], cachedPosition);
-      for (const mergedKey of buildPositionLookupKeys(settled[index])) {
+      for (const mergedKey of buildSettledLookupKeys(settled[index])) {
         settledIndexByKey.set(mergedKey, index);
       }
       continue;
@@ -2288,6 +2289,28 @@ function buildPositionLookupKeys(position: Pick<TrackedPosition, "marketId" | "m
   return Array.from(keys);
 }
 
+function isClosedSettledHistoryPosition(
+  position: Pick<TrackedPosition, "claimable" | "tokenBalance"> & { isSold?: boolean }
+) {
+  if (position.claimable) {
+    return false;
+  }
+
+  return position.isSold === true || !hasPositiveDecimal(position.tokenBalance);
+}
+
+function buildSettledLookupKeys(
+  position: Pick<TrackedPosition, "marketId" | "marketSlug" | "side" | "claimable" | "tokenBalance"> & { isSold?: boolean }
+) {
+  const stateKey = position.claimable
+    ? "claimable"
+    : isClosedSettledHistoryPosition(position)
+      ? "closed"
+      : "settled";
+
+  return buildPositionLookupKeys(position).map((key) => `${key}:${stateKey}`);
+}
+
 function recomputeTotals(
   active: TrackedPosition[],
   settled: TrackedPosition[]
@@ -2667,14 +2690,15 @@ function mergeHistoricalSettledPositions(
   });
 
   settled.forEach((position, index) => {
-    for (const key of buildPositionLookupKeys(position)) {
+    for (const key of buildSettledLookupKeys(position)) {
       settledIndexByKey.set(key, index);
     }
   });
 
   for (const position of historicalSettled) {
-    const keys = buildPositionLookupKeys(position);
-    const activePosition = keys
+    const positionKeys = buildPositionLookupKeys(position);
+    const keys = buildSettledLookupKeys(position);
+    const activePosition = positionKeys
       .map((key) => activePositionByKey.get(key))
       .find((entry): entry is TrackedPosition => Boolean(entry));
     const activeTokenBalance = Number(activePosition?.tokenBalance ?? "0");
@@ -2684,7 +2708,7 @@ function mergeHistoricalSettledPositions(
       activeTokenBalance > 0 &&
       activeTokenBalance < MIN_VISIBLE_ACTIVE_SHARES;
 
-    if (keys.some((key) => activeKeys.has(key)) && !allowSoldDustHistory) {
+    if (positionKeys.some((key) => activeKeys.has(key)) && !allowSoldDustHistory) {
       continue;
     }
 
@@ -2692,7 +2716,7 @@ function mergeHistoricalSettledPositions(
     if (existingSettledKey) {
       const index = settledIndexByKey.get(existingSettledKey)!;
       settled[index] = mergeHistoricalSettledPosition(settled[index], position);
-      for (const mergedKey of buildPositionLookupKeys(settled[index])) {
+      for (const mergedKey of buildSettledLookupKeys(settled[index])) {
         settledIndexByKey.set(mergedKey, index);
       }
       continue;
@@ -3105,4 +3129,20 @@ export async function GET(request: Request) {
       { status: 502, headers }
     );
   }
+}
+
+declare global {
+  var __positionsRouteTestHelpers:
+    | {
+        stabilizeSnapshotWithCache: typeof stabilizeSnapshotWithCache;
+        mergeHistoricalSettledPositions: typeof mergeHistoricalSettledPositions;
+      }
+    | undefined;
+}
+
+if (process.env.NODE_ENV === "test") {
+  globalThis.__positionsRouteTestHelpers = {
+    stabilizeSnapshotWithCache,
+    mergeHistoricalSettledPositions
+  };
 }

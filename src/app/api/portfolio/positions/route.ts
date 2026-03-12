@@ -25,6 +25,18 @@ const FAST_SNAPSHOT_MAX_AGE_MS = 20_000;
 const STALE_SNAPSHOT_MAX_AGE_MS = SNAPSHOT_CACHE_TTL_SECONDS * 1000;
 const ACTIVE_SNAPSHOT_VALUE_DROP_RATIO = 0.5;
 const SETTLED_SNAPSHOT_COUNT_DROP_RATIO = 0.5;
+const BLOCKSCOUT_HISTORY_PAGE_LIMIT = parsePositiveInteger(
+  process.env.BLOCKSCOUT_HISTORY_PAGE_LIMIT,
+  12,
+  6,
+  24
+);
+const BLOCKSCOUT_TX_META_LIMIT = parsePositiveInteger(
+  process.env.BLOCKSCOUT_TX_META_LIMIT,
+  250,
+  50,
+  400
+);
 
 /**
  * Fetch all active AMM markets from the Limitless API and return the subset
@@ -101,6 +113,25 @@ type BlockscoutHistoryEvent = {
   txHash?: string;
   timestamp?: string;
 };
+
+type LatestActivityRecord = {
+  timestamp?: string;
+  timestampMs: number;
+};
+
+function parsePositiveInteger(
+  rawValue: string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
 
 function getBaseRpcUrls() {
   return [
@@ -475,7 +506,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
     const usdcReceivedByTx = new Map<string, bigint>();
 
     let nextPageParams: string | null = null;
-    for (let page = 0; page < 6; page++) {
+    for (let page = 0; page < BLOCKSCOUT_HISTORY_PAGE_LIMIT; page++) {
       const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=to&type=ERC-1155`;
       const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
       try {
@@ -556,7 +587,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
     }
 
     nextPageParams = null;
-    for (let page = 0; page < 6; page++) {
+    for (let page = 0; page < BLOCKSCOUT_HISTORY_PAGE_LIMIT; page++) {
       const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=from&type=ERC-1155`;
       const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
       try {
@@ -674,7 +705,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
     }
 
     nextPageParams = null;
-    for (let page = 0; page < 6; page++) {
+    for (let page = 0; page < BLOCKSCOUT_HISTORY_PAGE_LIMIT; page++) {
       const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?type=ERC-20`;
       const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
       try {
@@ -756,7 +787,7 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
     }>();
 
     await Promise.all(
-      Array.from(txHashes).slice(0, 150).map(async (txHash) => {
+      Array.from(txHashes).slice(0, BLOCKSCOUT_TX_META_LIMIT).map(async (txHash) => {
         try {
           const txUrl = `https://base.blockscout.com/api/v2/transactions/${txHash}`;
           const txResp = await fetch(txUrl, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(5000) });
@@ -1525,6 +1556,7 @@ function mergeHistoricalSettledPosition(existing: TrackedPosition, historical: T
     realizedPnlUsdc: hasNonZeroDecimal(historical.realizedPnlUsdc) ? historical.realizedPnlUsdc : existing.realizedPnlUsdc,
     currentPrice: historical.currentPrice ?? existing.currentPrice,
     endsAt: historical.endsAt ?? existing.endsAt,
+    activityAt: historical.activityAt ?? existing.activityAt,
     claimable: existing.claimable || historical.claimable,
     tokenBalance: hasPositiveDecimal(historical.tokenBalance) ? historical.tokenBalance : existing.tokenBalance,
     ...((historical as any).isSold ? { isSold: true } : {}),
@@ -1545,6 +1577,7 @@ function mergeCachedSettledPosition(current: TrackedPosition, cached: TrackedPos
     realizedPnlUsdc: hasNonZeroDecimal(current.realizedPnlUsdc) ? current.realizedPnlUsdc : cached.realizedPnlUsdc,
     currentPrice: current.currentPrice ?? cached.currentPrice,
     endsAt: current.endsAt ?? cached.endsAt,
+    activityAt: current.activityAt ?? cached.activityAt,
     claimable: current.claimable || cached.claimable,
     tokenBalance: hasPositiveDecimal(current.tokenBalance) ? current.tokenBalance : cached.tokenBalance,
     ...((current as any).isSold || (cached as any).isSold ? { isSold: true } : {}),
@@ -1584,7 +1617,8 @@ function mergeCachedActivePosition(current: TrackedPosition, cached: TrackedPosi
         ? current.currentPrice
         : (cachedHasVerifiedPricing && isMeaningfulActivePrice(cached.currentPrice) ? cached.currentPrice : current.currentPrice),
     hasVerifiedPricing: currentHasVerifiedPricing || cachedHasVerifiedPricing,
-    endsAt: current.endsAt ?? cached.endsAt
+    endsAt: current.endsAt ?? cached.endsAt,
+    activityAt: current.activityAt ?? cached.activityAt
   };
 }
 
@@ -1800,12 +1834,12 @@ function stabilizeSnapshotWithCache(
   }
 
   const prunedSettled = prunePlaceholderSettledPositions(settled);
-  return {
+  return sortSnapshotByStoredRecency({
     ...snapshot,
     active,
     settled: prunedSettled,
     totals: recomputeTotals(active, prunedSettled)
-  };
+  });
 }
 
 function getSnapshotAgeMs(snapshot: PortfolioPositionsSnapshot | null) {
@@ -1851,7 +1885,7 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
   const fetchCtTransfers = async (direction: "in" | "out") => {
     let nextPageParams: string | null = null;
 
-    for (let page = 0; page < 6; page++) {
+    for (let page = 0; page < BLOCKSCOUT_HISTORY_PAGE_LIMIT; page++) {
       const filter = direction === "in" ? "to" : "from";
       const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=${filter}&type=ERC-1155`;
       const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
@@ -1954,7 +1988,7 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
   const fetchUsdcTransfers = async () => {
     let nextPageParams: string | null = null;
 
-    for (let page = 0; page < 6; page++) {
+    for (let page = 0; page < BLOCKSCOUT_HISTORY_PAGE_LIMIT; page++) {
       const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?type=ERC-20`;
       const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
       const response = await fetch(url, {
@@ -2202,7 +2236,8 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
         hasVerifiedPricing,
         conditionId: market.conditionId,
         conditionalTokensContract: market.conditionalTokensContract,
-        endsAt: market.endsAt
+        endsAt: market.endsAt,
+        activityAt: bucket.latestTimestamp
       });
     }
 
@@ -2225,7 +2260,8 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
         hasVerifiedPricing: true,
         conditionId: isWinner ? market.conditionId : undefined,
         conditionalTokensContract: isWinner ? market.conditionalTokensContract : undefined,
-        endsAt: market.endsAt
+        endsAt: market.endsAt,
+        activityAt: bucket.latestTimestamp
       });
     }
 
@@ -2253,17 +2289,17 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
         currentPrice: hasVerifiedAmmPrice(currentPrice) ? currentPrice : undefined,
         hasVerifiedPricing: hasVerifiedAmmPrice(currentPrice),
         endsAt: market.endsAt,
+        activityAt: bucket.latestTimestamp,
         isSold: bucket.hadSell,
         isRedeemed: bucket.hadRedeem
       });
     }
   }
 
-  active.sort((left, right) => parseTimestampMs(right.endsAt) - parseTimestampMs(left.endsAt));
-  settled.sort((left, right) => parseTimestampMs(right.endsAt) - parseTimestampMs(left.endsAt));
-
   return {
-    ...createPortfolioSnapshot(account, active, prunePlaceholderSettledPositions(settled)),
+    ...sortSnapshotByStoredRecency(
+      createPortfolioSnapshot(account, active, prunePlaceholderSettledPositions(settled))
+    ),
     fetchedAt: new Date().toISOString()
   };
 }
@@ -2356,7 +2392,7 @@ function prunePlaceholderSettledPositions(settled: TrackedPosition[]) {
 }
 
 function recordLatestActivity(
-  activityByKey: Map<string, number>,
+  activityByKey: Map<string, LatestActivityRecord>,
   market: AmmMarketRef,
   side: PositionSide,
   timestamp?: string
@@ -2377,9 +2413,12 @@ function recordLatestActivity(
   ];
 
   for (const key of keys) {
-    const existing = activityByKey.get(key) ?? 0;
-    if (parsed > existing) {
-      activityByKey.set(key, parsed);
+    const existing = activityByKey.get(key);
+    if (!existing || parsed > existing.timestampMs) {
+      activityByKey.set(key, {
+        timestamp,
+        timestampMs: parsed
+      });
     }
   }
 }
@@ -2393,7 +2432,7 @@ function buildLatestActivityByKey(
     marketByAddress.set(market.contractAddress.toLowerCase(), market);
   }
 
-  const activityByKey = new Map<string, number>();
+  const activityByKey = new Map<string, LatestActivityRecord>();
 
   for (const token of historySummary.inboundPositionTokens) {
     const market = marketByAddress.get(token.contractAddress.toLowerCase());
@@ -2431,36 +2470,86 @@ function buildLatestActivityByKey(
   return activityByKey;
 }
 
+function resolveStoredRecencyMs(position: Pick<TrackedPosition, "activityAt" | "endsAt">) {
+  const activityAtMs = parseTimestampMs(position.activityAt);
+  if (activityAtMs > 0) {
+    return activityAtMs;
+  }
+
+  return parseTimestampMs(position.endsAt);
+}
+
+function sortPositionsByStoredRecency<T extends Pick<TrackedPosition, "activityAt" | "endsAt">>(
+  positions: T[]
+) {
+  return positions
+    .map((position, index) => ({
+      position,
+      index,
+      timestampMs: resolveStoredRecencyMs(position)
+    }))
+    .sort((left, right) => {
+      if (right.timestampMs !== left.timestampMs) {
+        return right.timestampMs - left.timestampMs;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.position);
+}
+
+function sortSnapshotByStoredRecency(snapshot: PortfolioPositionsSnapshot): PortfolioPositionsSnapshot {
+  return {
+    ...snapshot,
+    active: sortPositionsByStoredRecency(snapshot.active),
+    settled: sortPositionsByStoredRecency(snapshot.settled)
+  };
+}
+
+function resolveLatestActivityForPosition(
+  position: Pick<TrackedPosition, "marketId" | "marketSlug" | "side">,
+  activityByKey: Map<string, LatestActivityRecord>
+) {
+  const matches = buildPositionLookupKeys(position)
+    .map((key) => activityByKey.get(key))
+    .filter((entry): entry is LatestActivityRecord => Boolean(entry));
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  return matches.reduce((latest, entry) =>
+    entry.timestampMs > latest.timestampMs ? entry : latest
+  );
+}
+
 function sortSnapshotActivePositions(
   snapshot: PortfolioPositionsSnapshot,
   historySummary: TransferHistorySummary,
   ammMarkets: AmmMarketRef[]
 ) {
-  if (snapshot.active.length <= 1) {
+  if (snapshot.active.length === 0 && snapshot.settled.length === 0) {
     return snapshot;
   }
 
   const activityByKey = buildLatestActivityByKey(historySummary, ammMarkets);
-  const active = snapshot.active
-    .map((position, index) => {
-      const latestActivity = buildPositionLookupKeys(position)
-        .map((key) => activityByKey.get(key) ?? 0)
-        .reduce((max, value) => Math.max(max, value), 0);
-
-      return { position, index, latestActivity };
-    })
-    .sort((left, right) => {
-      if (right.latestActivity !== left.latestActivity) {
-        return right.latestActivity - left.latestActivity;
+  const decorate = (positions: TrackedPosition[]) =>
+    positions.map((position) => {
+      const latestActivity = resolveLatestActivityForPosition(position, activityByKey);
+      if (!latestActivity?.timestamp) {
+        return position;
       }
-      return left.index - right.index;
-    })
-    .map((entry) => entry.position);
 
-  return {
+      return {
+        ...position,
+        activityAt: latestActivity.timestamp
+      };
+    });
+
+  return sortSnapshotByStoredRecency({
     ...snapshot,
-    active
-  };
+    active: decorate(snapshot.active),
+    settled: decorate(snapshot.settled)
+  });
 }
 
 function resolveMarketSideFromTokenId(
@@ -2745,7 +2834,8 @@ function mergePosition(primary: TrackedPosition, fallback: TrackedPosition): Tra
   return {
     ...fallback,
     ...primary,
-    currentPrice: primary.currentPrice ?? fallback.currentPrice
+    currentPrice: primary.currentPrice ?? fallback.currentPrice,
+    activityAt: primary.activityAt ?? fallback.activityAt
   };
 }
 
@@ -2988,11 +3078,13 @@ export async function GET(request: Request) {
       "X-Positions-Cache",
       cachedSnapshotAgeMs <= FAST_SNAPSHOT_MAX_AGE_MS ? "fast-hit" : "stale-hit"
     );
-    return Response.json(cachedSnapshot, { headers });
+    return Response.json(sortSnapshotByStoredRecency(cachedSnapshot), { headers });
   }
 
   const respondWithSnapshot = async (snapshot: PortfolioPositionsSnapshot) => {
-    const stabilizedSnapshot = stabilizeSnapshotWithCache(snapshot, cachedSnapshot);
+    const stabilizedSnapshot = sortSnapshotByStoredRecency(
+      stabilizeSnapshotWithCache(snapshot, cachedSnapshot)
+    );
     if (shouldRefreshSnapshotCache(snapshot, cachedSnapshot)) {
       await writeCachedPositionsSnapshot(account, stabilizedSnapshot, snapshotCacheClient);
     }
@@ -3222,7 +3314,7 @@ export async function GET(request: Request) {
     return respondWithSnapshot(finalSnapshot);
   } catch (error) {
     if (cachedSnapshot) {
-      return Response.json(cachedSnapshot, { headers });
+      return Response.json(sortSnapshotByStoredRecency(cachedSnapshot), { headers });
     }
     const message =
       error instanceof Error ? error.message : "Portfolio positions lookup failed";
@@ -3239,6 +3331,7 @@ declare global {
         stabilizeSnapshotWithCache: typeof stabilizeSnapshotWithCache;
         mergeHistoricalSettledPositions: typeof mergeHistoricalSettledPositions;
         reconcileClaimableSettledWithOnchain: typeof reconcileClaimableSettledWithOnchain;
+        sortSnapshotByStoredRecency: typeof sortSnapshotByStoredRecency;
       }
     | undefined;
 }
@@ -3247,6 +3340,7 @@ if (process.env.NODE_ENV === "test") {
   globalThis.__positionsRouteTestHelpers = {
     stabilizeSnapshotWithCache,
     mergeHistoricalSettledPositions,
-    reconcileClaimableSettledWithOnchain
+    reconcileClaimableSettledWithOnchain,
+    sortSnapshotByStoredRecency
   };
 }

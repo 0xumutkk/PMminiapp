@@ -22,6 +22,8 @@ export type TrackedPosition = {
   hasVerifiedPricing?: boolean;
   /** The date when the market ends/ended. */
   endsAt?: string;
+  /** Latest known user activity time for this position, used to keep history ordered by recency. */
+  activityAt?: string;
   /** Optional redeem metadata for settled AMM positions. */
   conditionId?: `0x${string}`;
   conditionalTokensContract?: `0x${string}`;

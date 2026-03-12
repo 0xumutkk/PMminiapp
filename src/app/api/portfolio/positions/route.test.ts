@@ -25,6 +25,9 @@ type TestHelpers = {
       contractAddress: `0x${string}`;
     }>
   ) => PortfolioPositionsSnapshot;
+  sortSnapshotByStoredRecency: (
+    snapshot: PortfolioPositionsSnapshot
+  ) => PortfolioPositionsSnapshot;
 };
 
 let testHelpers: TestHelpers;
@@ -195,4 +198,32 @@ test("reconcileClaimableSettledWithOnchain converts stale claimable rows into re
   assert.equal(redeemedRow.tokenBalance, "0");
   assert.equal(redeemedRow.marketValueUsdc, "0.151683");
   assert.equal(redeemedRow.currentPrice, 1);
+});
+
+test("sortSnapshotByStoredRecency orders history by latest activity before market end date", () => {
+  const olderTrade = buildSettledPosition({
+    id: "older-trade",
+    marketId: "0x1111111111111111111111111111111111111111",
+    marketSlug: "older-trade",
+    marketTitle: "Older Trade",
+    endsAt: "2026-03-12T12:00:00.000Z",
+    activityAt: "2026-03-01T12:00:00.000Z"
+  });
+  const newerTrade = buildSettledPosition({
+    id: "newer-trade",
+    marketId: "0x2222222222222222222222222222222222222222",
+    marketSlug: "newer-trade",
+    marketTitle: "Newer Trade",
+    endsAt: "2026-03-11T12:00:00.000Z",
+    activityAt: "2026-03-10T12:00:00.000Z"
+  });
+
+  const result = testHelpers.sortSnapshotByStoredRecency(
+    buildSnapshot([olderTrade, newerTrade])
+  );
+
+  assert.deepEqual(
+    result.settled.map((item) => item.id),
+    ["newer-trade", "older-trade"]
+  );
 });

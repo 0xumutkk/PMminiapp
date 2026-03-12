@@ -1,5 +1,8 @@
 "use client";
 
+import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
+import { getPortfolioPositionsQueryKey } from "@/lib/portfolio/use-portfolio-positions";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useAccount,
@@ -85,6 +88,91 @@ function notifyPositionsRefresh() {
   window.dispatchEvent(new CustomEvent("positions:refresh"));
 }
 
+function normalizeTradeMarketRef(value: string | undefined) {
+  if (!value || typeof value !== "string") {
+    return "";
+  }
+
+  return value.trim().toLowerCase();
+}
+
+function formatPortfolioAmount(value: number) {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  return value.toFixed(6).replace(/\.?0+$/, "") || "0";
+}
+
+function recomputePortfolioTotals(snapshot: PortfolioPositionsSnapshot): PortfolioPositionsSnapshot["totals"] {
+  return {
+    activeMarketValueUsdc: formatPortfolioAmount(
+      snapshot.active.reduce((sum, item) => sum + Number(item.marketValueUsdc), 0)
+    ),
+    unrealizedPnlUsdc: formatPortfolioAmount(
+      snapshot.active.reduce((sum, item) => sum + Number(item.unrealizedPnlUsdc), 0)
+    ),
+    claimableUsdc: formatPortfolioAmount(
+      snapshot.settled
+        .filter((item) => item.claimable)
+        .reduce((sum, item) => sum + Number(item.marketValueUsdc), 0)
+    )
+  };
+}
+
+function applyConfirmedTradeToSnapshot(
+  snapshot: PortfolioPositionsSnapshot,
+  trade: ConfirmedTrade
+): PortfolioPositionsSnapshot {
+  if (trade.action !== "redeem" || !trade.side) {
+    return snapshot;
+  }
+
+  const targetMarket = normalizeTradeMarketRef(trade.marketId);
+  if (!targetMarket) {
+    return snapshot;
+  }
+
+  let changed = false;
+  const settled = snapshot.settled.map((position) => {
+    const marketId = normalizeTradeMarketRef(position.marketId);
+    const marketSlug = normalizeTradeMarketRef(position.marketSlug);
+    const isMatch =
+      position.claimable &&
+      position.side === trade.side &&
+      (marketId === targetMarket || marketSlug === targetMarket);
+
+    if (!isMatch) {
+      return position;
+    }
+
+    changed = true;
+    const proceeds = Number(position.marketValueUsdc);
+    const cost = Number(position.costUsdc);
+
+    return {
+      ...position,
+      claimable: false,
+      tokenBalance: "0",
+      realizedPnlUsdc: formatPortfolioAmount(proceeds - cost),
+      currentPrice: typeof position.currentPrice === "number" ? position.currentPrice : 1
+    };
+  });
+
+  if (!changed) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    settled,
+    totals: recomputePortfolioTotals({
+      ...snapshot,
+      settled
+    })
+  };
+}
+
 function actionLabel(action: TradeIntentAction) {
   if (action === "sell") {
     return "sell";
@@ -98,6 +186,7 @@ function actionLabel(action: TradeIntentAction) {
 export function useTradeExecutor() {
   const { address, isConnected } = useAccount();
   const { user, getAuthHeaders } = useMiniAppAuth();
+  const queryClient = useQueryClient();
   const chainId = useChainId();
   const publicClient = usePublicClient({ chainId });
 
@@ -117,6 +206,17 @@ export function useTradeExecutor() {
     pendingTrade: null,
     lastConfirmedTrade: null
   });
+
+  const applyOptimisticPortfolioUpdate = useCallback((trade: ConfirmedTrade | null) => {
+    if (!address || !trade) {
+      return;
+    }
+
+    queryClient.setQueryData<PortfolioPositionsSnapshot | undefined>(
+      getPortfolioPositionsQueryKey(address),
+      (current) => (current ? applyConfirmedTradeToSnapshot(current, trade) : current)
+    );
+  }, [address, queryClient]);
 
   const callsStatus = useWaitForCallsStatus({
     id: state.batchId ?? undefined,
@@ -146,6 +246,12 @@ export function useTradeExecutor() {
         callsStatus.data?.receipts
           ?.map((receipt) => receipt.transactionHash as `0x${string}`)
           .filter((hash) => typeof hash === "string" && hash.startsWith("0x")) ?? [];
+      const confirmedTrade = state.pendingTrade
+        ? {
+          ...state.pendingTrade,
+          confirmedAt: new Date().toISOString()
+        }
+        : null;
 
       setState((current) => ({
         ...current,
@@ -155,15 +261,15 @@ export function useTradeExecutor() {
         submittedCalls: 0,
         txHashes: txHashes.length > 0 ? txHashes : current.txHashes,
         currentAction: current.pendingTrade?.action ?? current.currentAction,
-        lastConfirmedTrade: current.pendingTrade
-          ? {
-            ...current.pendingTrade,
-            confirmedAt: new Date().toISOString()
-          }
-          : current.lastConfirmedTrade,
+        lastConfirmedTrade: confirmedTrade ?? current.lastConfirmedTrade,
         pendingTrade: null
       }));
-      notifyPositionsRefresh();
+      applyOptimisticPortfolioUpdate(confirmedTrade);
+      if (confirmedTrade?.action === "redeem") {
+        window.setTimeout(() => notifyPositionsRefresh(), 15_000);
+      } else {
+        notifyPositionsRefresh();
+      }
       return;
     }
 
@@ -178,7 +284,7 @@ export function useTradeExecutor() {
         pendingTrade: null
       }));
     }
-  }, [callsStatus.data]);
+  }, [applyOptimisticPortfolioUpdate, callsStatus.data, state.pendingTrade]);
 
   const executeIntent = useCallback(
     async (params: ExecuteIntentParams) => {
@@ -260,6 +366,12 @@ export function useTradeExecutor() {
         }));
         const totalCalls = calls.length;
         const intentMeta = (body as TradeIntentSuccess).meta;
+        console.log("[TradeExecutor] Intent prepared", {
+          action: params.action,
+          marketId: params.marketId,
+          totalCalls,
+          meta: intentMeta
+        });
         const pendingTrade: ConfirmedTrade = {
           action: params.action,
           marketId: params.marketId,
@@ -274,12 +386,23 @@ export function useTradeExecutor() {
         try {
           if (totalCalls === 1) {
             const [call] = calls;
+            console.log("[TradeExecutor] Sending single transaction", {
+              action: pendingTrade.action,
+              marketId: pendingTrade.marketId,
+              to: call.to,
+              value: call.value.toString()
+            });
             const hash = await sendTransactionAsync({
               account: address,
               chainId,
               to: call.to,
               data: call.data,
               value: call.value
+            });
+            console.log("[TradeExecutor] Single transaction hash", {
+              action: pendingTrade.action,
+              marketId: pendingTrade.marketId,
+              hash
             });
 
             setState((current) => ({
@@ -298,6 +421,12 @@ export function useTradeExecutor() {
                 hash,
                 confirmations: 1,
                 timeout: 120_000
+              });
+              console.log("[TradeExecutor] Single transaction receipt", {
+                action: pendingTrade.action,
+                marketId: pendingTrade.marketId,
+                hash,
+                status: receipt.status
               });
 
               if (receipt.status !== "success") {
@@ -319,7 +448,15 @@ export function useTradeExecutor() {
                 confirmedAt: new Date().toISOString()
               }
             }));
-            notifyPositionsRefresh();
+            applyOptimisticPortfolioUpdate({
+              ...pendingTrade,
+              confirmedAt: new Date().toISOString()
+            });
+            if (pendingTrade.action === "redeem") {
+              window.setTimeout(() => notifyPositionsRefresh(), 15_000);
+            } else {
+              notifyPositionsRefresh();
+            }
             return;
           }
 
@@ -328,6 +465,12 @@ export function useTradeExecutor() {
             chainId,
             calls,
             forceAtomic: true
+          });
+          console.log("[TradeExecutor] Batch submitted", {
+            action: pendingTrade.action,
+            marketId: pendingTrade.marketId,
+            batchId: batch.id,
+            totalCalls
           });
 
           setState((current) => ({
@@ -341,7 +484,12 @@ export function useTradeExecutor() {
             pendingTrade
           }));
           return;
-        } catch {
+        } catch (batchOrSendError) {
+          console.warn("[TradeExecutor] Falling back to sequential sends", {
+            action: pendingTrade.action,
+            marketId: pendingTrade.marketId,
+            message: errorToMessage(batchOrSendError)
+          });
           // Fallback for wallets without EIP-5792 support: send sequential transactions.
           const txHashes: `0x${string}`[] = [];
 
@@ -362,6 +510,13 @@ export function useTradeExecutor() {
               to: call.to,
               data: call.data,
               value: call.value
+            });
+            console.log("[TradeExecutor] Sequential transaction hash", {
+              action: pendingTrade.action,
+              marketId: pendingTrade.marketId,
+              hash,
+              index: txHashes.length + 1,
+              totalCalls
             });
 
             txHashes.push(hash);
@@ -384,6 +539,12 @@ export function useTradeExecutor() {
                 confirmations: 1,
                 timeout: 120_000
               });
+              console.log("[TradeExecutor] Sequential transaction receipt", {
+                action: pendingTrade.action,
+                marketId: pendingTrade.marketId,
+                hash,
+                status: receipt.status
+              });
               if (receipt.status !== "success") {
                 throw new Error(`Transaction reverted: ${hash}`);
               }
@@ -404,7 +565,15 @@ export function useTradeExecutor() {
               confirmedAt: new Date().toISOString()
             }
           }));
-          notifyPositionsRefresh();
+          applyOptimisticPortfolioUpdate({
+            ...pendingTrade,
+            confirmedAt: new Date().toISOString()
+          });
+          if (pendingTrade.action === "redeem") {
+            window.setTimeout(() => notifyPositionsRefresh(), 15_000);
+          } else {
+            notifyPositionsRefresh();
+          }
         }
       } catch (error) {
         setState((current) => ({
@@ -418,7 +587,7 @@ export function useTradeExecutor() {
         }));
       }
     },
-    [address, chainId, isConnected, publicClient, sendCallsAsync, sendTransactionAsync, tradeAddress, user, getAuthHeaders]
+    [address, applyOptimisticPortfolioUpdate, chainId, isConnected, publicClient, sendCallsAsync, sendTransactionAsync, tradeAddress, user, getAuthHeaders]
   );
 
   const executeTrade = useCallback(

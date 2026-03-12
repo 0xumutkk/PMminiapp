@@ -73,6 +73,8 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     !error && (isBusy || state.status === "submitted" || state.status === "confirmed")
       ? statusLabel
       : null;
+  const latestTxHash = state.txHashes[state.txHashes.length - 1] ?? null;
+  const latestTxHref = latestTxHash ? `https://basescan.org/tx/${latestTxHash}` : null;
 
   useEffect(() => {
     if (!account || !isAuthenticated) return;
@@ -155,6 +157,16 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
       <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
         {tradeNotice && <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '12px', padding: '0 4px' }}>{tradeNotice}</p>}
+        {latestTxHref && (
+          <a
+            href={latestTxHref}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: '#7dd3fc', fontSize: '12px', padding: '0 4px', textDecoration: 'underline' }}
+          >
+            View latest tx
+          </a>
+        )}
         {activePositions.length > 0 ? (
           activePositions.map((position) => {
             const prob = parseProbability(position.currentPrice);
@@ -234,6 +246,16 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
       <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
         {tradeNotice && <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '12px', padding: '0 4px' }}>{tradeNotice}</p>}
+        {latestTxHref && (
+          <a
+            href={latestTxHref}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: '#7dd3fc', fontSize: '12px', padding: '0 4px', textDecoration: 'underline' }}
+          >
+            View latest tx
+          </a>
+        )}
         {closedPositions.length > 0 ? (
           closedPositions.map((position) => {
             const isRedeemed = Number(position.currentPrice) > 0 && Number(position.tokenBalance) === 0 && position.status === "settled" && !(position as any).isSold;
@@ -328,6 +350,16 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     <section className="positions-panel" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
       {error && <p style={{ color: '#dc2626', fontSize: '12px', padding: '0 4px' }}>{error}</p>}
       {tradeNotice && <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '12px', padding: '0 4px' }}>{tradeNotice}</p>}
+      {latestTxHref && (
+        <a
+          href={latestTxHref}
+          target="_blank"
+          rel="noreferrer"
+          style={{ color: '#7dd3fc', fontSize: '12px', padding: '0 4px', textDecoration: 'underline' }}
+        >
+          View latest tx
+        </a>
+      )}
       {claimableSettledPositions.length > 0 ? (
         claimableSettledPositions.map((position) => (
           <div key={position.id} className="positionDetailCard" style={{ borderColor: 'rgba(11, 213, 45, 0.3)' }}>

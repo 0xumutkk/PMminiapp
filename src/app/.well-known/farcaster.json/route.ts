@@ -13,6 +13,8 @@ type MiniAppFrameManifest = {
   iconUrl: string;
   splashImageUrl: string;
   splashBackgroundColor: string;
+  requiredCapabilities?: string[];
+  requiredChains?: string[];
   webhookUrl?: string;
   subtitle?: string;
   description?: string;
@@ -100,6 +102,10 @@ function parseList(raw: string | undefined): string[] | undefined {
     .filter((value) => value.length > 0);
 
   return values.length > 0 ? values : undefined;
+}
+
+function withDefaultList(values: string[] | undefined, fallback: string[]) {
+  return values && values.length > 0 ? values : fallback;
 }
 
 function parseBaseBuilder(): BaseBuilderManifest | undefined {
@@ -277,6 +283,14 @@ export async function GET(request: Request) {
   );
   const ogImageUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_OG_IMAGE_URL, `${baseUrl}/og.png`, requestHost);
   const heroImageUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_HERO_IMAGE_URL, `${baseUrl}/og.png`, requestHost);
+  const requiredCapabilities = withDefaultList(
+    parseList(process.env.NEXT_PUBLIC_MINI_APP_REQUIRED_CAPABILITIES),
+    ["wallet.getEthereumProvider"]
+  );
+  const requiredChains = withDefaultList(
+    parseList(process.env.NEXT_PUBLIC_MINI_APP_REQUIRED_CHAINS),
+    ["eip155:8453"]
+  );
 
   const frame: MiniAppFrameManifest = {
     version: "1",
@@ -285,6 +299,8 @@ export async function GET(request: Request) {
     iconUrl,
     splashImageUrl,
     splashBackgroundColor: process.env.NEXT_PUBLIC_SPLASH_BG ?? "#0b1020",
+    requiredCapabilities,
+    requiredChains,
     webhookUrl: process.env.MINI_APP_WEBHOOK_URL || process.env.FARCASTER_WEBHOOK_URL || undefined,
     subtitle: toOptionalShortText(process.env.NEXT_PUBLIC_APP_SUBTITLE, 30),
     description: toOptionalShortText(process.env.NEXT_PUBLIC_APP_DESCRIPTION, 30),

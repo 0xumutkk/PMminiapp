@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test $(find src -name '*.test.ts' | sort)",
     "worker": "tsx src/server/indexer-worker.ts"
   },
   "dependencies": {

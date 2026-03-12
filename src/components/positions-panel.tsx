@@ -2,7 +2,10 @@
 
 import { classifyClosedPositionState } from "@/lib/portfolio/closed-position-state";
 import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
-import { filterVisibleActivePositions } from "@/lib/portfolio/visible-active-positions";
+import {
+  filterSmallActivePositions,
+  filterVisibleActivePositions
+} from "@/lib/portfolio/visible-active-positions";
 import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
 import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -98,6 +101,10 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     () => filterVisibleActivePositions(snapshot?.active ?? [], snapshot?.settled ?? []),
     [snapshot?.active, snapshot?.settled]
   );
+  const smallPositions = useMemo(
+    () => filterSmallActivePositions(snapshot?.active ?? []),
+    [snapshot?.active]
+  );
   const closedPositions = useMemo(
     () => snapshot?.settled.filter((item) => item.isSold === true || !item.claimable) ?? [],
     [snapshot?.settled]
@@ -108,7 +115,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
   );
 
   useEffect(() => {
-    if (!loading && activePositions.length > 0 && typeof window !== 'undefined') {
+    if (!loading && (activePositions.length > 0 || smallPositions.length > 0) && typeof window !== 'undefined') {
       const hash = window.location.hash;
       if (hash && hash.startsWith('#market-')) {
         // Wait a tick for DOM to be stable
@@ -128,7 +135,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
         return () => clearTimeout(timer);
       }
     }
-  }, [loading, activePositions, filter]);
+  }, [activePositions.length, filter, loading, smallPositions.length]);
 
   const onSell = useCallback(async (position: ActivePosition) => {
     if (!isConnected || !account) return;
@@ -167,6 +174,72 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     }
   }, [account, executeIntent, isConnected]);
 
+  const renderActivePositionCard = (position: ActivePosition) => {
+    const prob = parseProbability(position.currentPrice);
+    const probText = prob ? `${(prob * 100).toFixed(1)}%` : "--";
+    const isRedPnL = Number(position.unrealizedPnlUsdc) < 0;
+    const hasVerifiedPricing = position.hasVerifiedPricing === true;
+
+    return (
+      <div
+        key={position.id}
+        id={`market-${position.marketId}`}
+        className="positionDetailCard"
+        style={{ cursor: 'pointer' }}
+        onClick={() => router.push(buildFeedHref(position.marketSlug || position.marketId) as any)}
+      >
+        <div className="posContent">
+          <header className="posHeader">
+            <div className="marketAvatar">
+              {position.side === 'yes' ? '👍' : '👎'}
+            </div>
+            <div className="marketTitleBlock">
+              <span className="marketName">{position.marketTitle}</span>
+              <span className="marketProb">{probText}</span>
+            </div>
+          </header>
+
+          <div className="posStatsGrid">
+            <div className="statRow">
+              <div className="statBox">
+                <span className="posLabel">Worth</span>
+                <span className="posVal valGreen">{formatOptionalUsd(position.marketValueUsdc, hasVerifiedPricing)}</span>
+              </div>
+              <div className="statBox">
+                <span className="posLabel">PNL</span>
+                <span className={`posVal ${isRedPnL ? 'valRed' : 'valGreen'}`}>
+                  {hasVerifiedPricing ? `${isRedPnL ? '' : '+'}${formatUsd(position.unrealizedPnlUsdc)}` : "--"}
+                </span>
+              </div>
+            </div>
+            <div className="statRow">
+              <div className="statBox">
+                <span className="posLabel">Holdings</span>
+                <span className="posVal valWhite">
+                  {Number(position.tokenBalance).toLocaleString()} {position.side.toUpperCase()} Shares
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="actionArea">
+          <button
+            type="button"
+            className="cashOutBtn"
+            onClick={(e) => {
+              e.stopPropagation();
+              void onSell(position);
+            }}
+            disabled={!isConnected || isBusy || activeActionId === position.id}
+          >
+            {activeActionId === position.id ? "Selling..." : "Cash Out"}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   if (!isAuthenticated || !account) return null;
 
   if (filter === "active") {
@@ -185,73 +258,26 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
           </a>
         )}
         {activePositions.length > 0 ? (
-          activePositions.map((position) => {
-            const prob = parseProbability(position.currentPrice);
-            const probText = prob ? `${(prob * 100).toFixed(1)}%` : "--";
-            const isRedPnL = Number(position.unrealizedPnlUsdc) < 0;
-            const hasVerifiedPricing = position.hasVerifiedPricing === true;
-
-            return (
-              <div
-                key={position.id}
-                id={`market-${position.marketId}`}
-                className="positionDetailCard"
-                style={{ cursor: 'pointer' }}
-                onClick={() => router.push(buildFeedHref(position.marketSlug || position.marketId) as any)}
-              >
-                <div className="posContent">
-                  <header className="posHeader">
-                    <div className="marketAvatar">
-                      {position.side === 'yes' ? '👍' : '👎'}
-                    </div>
-                    <div className="marketTitleBlock">
-                      <span className="marketName">{position.marketTitle}</span>
-                      <span className="marketProb">{probText}</span>
-                    </div>
-                  </header>
-
-                  <div className="posStatsGrid">
-                    <div className="statRow">
-                      <div className="statBox">
-                        <span className="posLabel">Worth</span>
-                        <span className="posVal valGreen">{formatOptionalUsd(position.marketValueUsdc, hasVerifiedPricing)}</span>
-                      </div>
-                      <div className="statBox">
-                        <span className="posLabel">PNL</span>
-                        <span className={`posVal ${isRedPnL ? 'valRed' : 'valGreen'}`}>
-                          {hasVerifiedPricing ? `${isRedPnL ? '' : '+'}${formatUsd(position.unrealizedPnlUsdc)}` : "--"}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="statRow">
-                      <div className="statBox">
-                        <span className="posLabel">Holdings</span>
-                        <span className="posVal valWhite">
-                          {Number(position.tokenBalance).toLocaleString()} {position.side.toUpperCase()} Shares
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="actionArea">
-                  <button
-                    type="button"
-                    className="cashOutBtn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void onSell(position);
-                    }}
-                    disabled={!isConnected || isBusy || activeActionId === position.id}
-                  >
-                    {activeActionId === position.id ? "Selling..." : "Cash Out"}
-                  </button>
-                </div>
-              </div>
-            )
-          })
+          activePositions.map(renderActivePositionCard)
         ) : (
-          <p style={{ opacity: 0.6, fontSize: '13px', padding: '12px 4px' }}>No active positions yet.</p>
+          <p style={{ opacity: 0.6, fontSize: '13px', padding: '12px 4px' }}>
+            {smallPositions.length > 0
+              ? 'No active positions above 0.1 shares. Small positions are listed below.'
+              : 'No active positions yet.'}
+          </p>
+        )}
+        {smallPositions.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: activePositions.length > 0 ? '8px' : '0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
+              <span style={{ fontSize: '12px', fontWeight: '700', color: 'rgba(255,255,255,0.82)', letterSpacing: '0.02em' }}>
+                Small Positions
+              </span>
+              <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>
+                Below 0.1 shares
+              </span>
+            </div>
+            {smallPositions.map(renderActivePositionCard)}
+          </div>
         )}
       </section>
     );

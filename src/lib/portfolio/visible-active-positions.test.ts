@@ -46,7 +46,7 @@ test("falls back to returning dust positions when filtering would otherwise empt
   );
 });
 
-test("hides sold dust positions from active when the same market exists in history", () => {
+test("falls back to showing sold-dust active positions when suppression would empty the list", () => {
   const active = [createActivePosition("dust-1", "0.02")];
   const settled = [
     {
@@ -57,5 +57,8 @@ test("hides sold dust positions from active when the same market exists in histo
     }
   ];
 
-  assert.deepEqual(filterVisibleActivePositions(active, settled), []);
+  assert.deepEqual(
+    filterVisibleActivePositions(active, settled).map((position) => position.id),
+    ["dust-1"]
+  );
 });

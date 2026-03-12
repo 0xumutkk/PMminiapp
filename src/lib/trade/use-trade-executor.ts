@@ -1,6 +1,10 @@
 "use client";
 
 import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
+import {
+  removeStoredOptimisticPortfolioBuys,
+  storeOptimisticPortfolioBuy
+} from "@/lib/portfolio/optimistic-portfolio";
 import { getPortfolioPositionsQueryKey } from "@/lib/portfolio/use-portfolio-positions";
 import {
   shouldUseDirectTransactionSubmission
@@ -49,6 +53,7 @@ type TradeState = {
 
 type ExecuteTradeParams = {
   marketId: string;
+  marketTitle?: string;
   side: TradeSide;
   amountUsdc: string;
   expectedPrice?: number;
@@ -58,6 +63,7 @@ type ExecuteTradeParams = {
 type ExecuteIntentParams = {
   action: TradeIntentAction;
   marketId: string;
+  marketTitle?: string;
   side?: TradeSide;
   amountUsdc?: string;
   expectedPrice?: number;
@@ -67,6 +73,7 @@ type ExecuteIntentParams = {
 type ConfirmedTrade = {
   action: TradeIntentAction;
   marketId: string;
+  marketTitle?: string;
   side?: TradeSide;
   amountUsdc?: string;
   executionPrice?: number;
@@ -144,6 +151,79 @@ function applyConfirmedTradeToSnapshot(
   snapshot: PortfolioPositionsSnapshot,
   trade: ConfirmedTrade
 ): PortfolioPositionsSnapshot {
+  if (trade.action === "buy" && trade.side) {
+    const targetMarket = normalizeTradeMarketRef(trade.marketId);
+    if (!targetMarket) {
+      return snapshot;
+    }
+
+    const existingIndex = snapshot.active.findIndex((position) => {
+      const marketId = normalizeTradeMarketRef(position.marketId);
+      const marketSlug = normalizeTradeMarketRef(position.marketSlug);
+      return position.side === trade.side && (marketId === targetMarket || marketSlug === targetMarket);
+    });
+
+    const amountUsdc = Number(trade.amountUsdc ?? "0");
+    const executionPrice =
+      typeof trade.executionPrice === "number" &&
+      Number.isFinite(trade.executionPrice) &&
+      trade.executionPrice > 0 &&
+      trade.executionPrice < 1
+        ? trade.executionPrice
+        : undefined;
+    const estimatedShares =
+      Number.isFinite(amountUsdc) && amountUsdc > 0
+        ? executionPrice
+          ? amountUsdc / executionPrice
+          : amountUsdc
+        : 0;
+
+    const optimisticPosition = {
+      id: `optimistic:${trade.marketId}:${trade.side}`,
+      marketId: trade.marketId,
+      marketSlug: trade.marketId,
+      marketTitle: trade.marketTitle ?? trade.marketId,
+      side: trade.side,
+      status: "active" as const,
+      costUsdc: Number.isFinite(amountUsdc) && amountUsdc > 0 ? formatPortfolioAmount(amountUsdc) : "0",
+      marketValueUsdc: Number.isFinite(amountUsdc) && amountUsdc > 0 ? formatPortfolioAmount(amountUsdc) : "0",
+      unrealizedPnlUsdc: "0",
+      realizedPnlUsdc: "0",
+      claimable: false,
+      tokenBalance: estimatedShares > 0 ? formatPortfolioAmount(estimatedShares) : "0",
+      currentPrice: executionPrice,
+      hasVerifiedPricing: executionPrice !== undefined,
+      activityAt: trade.confirmedAt
+    };
+
+    const active =
+      existingIndex >= 0
+        ? snapshot.active.map((position, index) =>
+            index === existingIndex
+              ? {
+                  ...position,
+                  costUsdc: formatPortfolioAmount(Number(position.costUsdc) + Math.max(0, amountUsdc)),
+                  marketValueUsdc: formatPortfolioAmount(Number(position.marketValueUsdc) + Math.max(0, amountUsdc)),
+                  tokenBalance: formatPortfolioAmount(Number(position.tokenBalance) + Math.max(0, estimatedShares)),
+                  currentPrice: executionPrice ?? position.currentPrice,
+                  hasVerifiedPricing: executionPrice !== undefined || position.hasVerifiedPricing === true,
+                  activityAt: trade.confirmedAt,
+                  marketTitle: position.marketTitle || trade.marketTitle || trade.marketId
+                }
+              : position
+          )
+        : [optimisticPosition, ...snapshot.active];
+
+    return {
+      ...snapshot,
+      active,
+      totals: recomputePortfolioTotals({
+        ...snapshot,
+        active
+      })
+    };
+  }
+
   if (trade.action !== "redeem" || !trade.side) {
     return snapshot;
   }
@@ -255,6 +335,29 @@ export function useTradeExecutor() {
     );
   }, [address, queryClient]);
 
+  const persistConfirmedTrade = useCallback((trade: ConfirmedTrade | null) => {
+    if (!address || !trade || !trade.side) {
+      return;
+    }
+
+    if (trade.action === "buy") {
+      storeOptimisticPortfolioBuy({
+        account: address,
+        marketId: trade.marketId,
+        marketTitle: trade.marketTitle ?? trade.marketId,
+        side: trade.side,
+        amountUsdc: trade.amountUsdc ?? "0",
+        executionPrice: trade.executionPrice,
+        confirmedAt: trade.confirmedAt
+      });
+      return;
+    }
+
+    if (trade.action === "sell" || trade.action === "redeem") {
+      removeStoredOptimisticPortfolioBuys(address, trade.marketId, trade.side);
+    }
+  }, [address]);
+
   const callsStatus = useWaitForCallsStatus({
     id: state.batchId ?? undefined,
     pollingInterval: 1000,
@@ -347,6 +450,8 @@ export function useTradeExecutor() {
           pendingTrade: null
         }));
         applyOptimisticPortfolioUpdate(confirmedTrade);
+        persistConfirmedTrade(confirmedTrade);
+        void queryClient.invalidateQueries({ queryKey: getPortfolioPositionsQueryKey(address ?? null) });
         if (shouldRefreshBalanceOnConfirmation(confirmedTrade?.action)) {
           notifyBalanceRefresh();
         }
@@ -516,6 +621,11 @@ export function useTradeExecutor() {
               ...pendingTrade,
               confirmedAt: new Date().toISOString()
             });
+            persistConfirmedTrade({
+              ...pendingTrade,
+              confirmedAt: new Date().toISOString()
+            });
+            void queryClient.invalidateQueries({ queryKey: getPortfolioPositionsQueryKey(address ?? null) });
             if (shouldRefreshBalanceOnConfirmation(pendingTrade.action)) {
               notifyBalanceRefresh();
             }
@@ -615,6 +725,11 @@ export function useTradeExecutor() {
             ...pendingTrade,
             confirmedAt: new Date().toISOString()
           });
+          persistConfirmedTrade({
+            ...pendingTrade,
+            confirmedAt: new Date().toISOString()
+          });
+          void queryClient.invalidateQueries({ queryKey: getPortfolioPositionsQueryKey(address ?? null) });
           if (shouldRefreshBalanceOnConfirmation(pendingTrade.action)) {
             notifyBalanceRefresh();
           }
@@ -637,7 +752,7 @@ export function useTradeExecutor() {
         }));
       }
     },
-    [address, applyOptimisticPortfolioUpdate, chainId, confirmationClient, connector?.id, isConnected, sendCallsAsync, sendTransactionAsync, tradeAddress, user, getAuthHeaders]
+    [address, applyOptimisticPortfolioUpdate, chainId, confirmationClient, connector?.id, getAuthHeaders, isConnected, persistConfirmedTrade, queryClient, sendCallsAsync, sendTransactionAsync, tradeAddress, user]
   );
 
   const executeTrade = useCallback(

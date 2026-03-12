@@ -2,9 +2,16 @@
 
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
+import {
+  createOptimisticPortfolioSnapshot,
+  mergeOptimisticPortfolioBuys,
+  OPTIMISTIC_PORTFOLIO_EVENT,
+  readStoredOptimisticPortfolioBuys,
+  type StoredOptimisticPortfolioBuy
+} from "@/lib/portfolio/optimistic-portfolio";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { isAddress } from "viem";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAccount } from "wagmi";
 
 export const PORTFOLIO_POSITIONS_STALE_TIME_MS = 15_000;
@@ -47,6 +54,7 @@ export function usePortfolioPositions() {
   const { user, isAuthenticated, getAuthHeaders } = useMiniAppAuth();
   const queryClient = useQueryClient();
   const backgroundFreshSyncRef = useRef<Map<string, number>>(new Map());
+  const [optimisticBuys, setOptimisticBuys] = useState<StoredOptimisticPortfolioBuy[]>([]);
   // Portfolio positions belong to the connected wallet, not the auth identity.
   const account = address ?? user?.address ?? null;
   const enabled = Boolean(account && isAuthenticated && isAddress(account));
@@ -96,11 +104,47 @@ export function usePortfolioPositions() {
     void refetch();
   }, [account, enabled, query.data, query.dataUpdatedAt, refetch]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const syncOptimisticBuys = () => {
+      setOptimisticBuys(readStoredOptimisticPortfolioBuys(account));
+    };
+
+    syncOptimisticBuys();
+    window.addEventListener(OPTIMISTIC_PORTFOLIO_EVENT, syncOptimisticBuys);
+    window.addEventListener("storage", syncOptimisticBuys);
+
+    return () => {
+      window.removeEventListener(OPTIMISTIC_PORTFOLIO_EVENT, syncOptimisticBuys);
+      window.removeEventListener("storage", syncOptimisticBuys);
+    };
+  }, [account]);
+
+  const mergedSnapshot = useMemo(() => {
+    if (!enabled || !account) {
+      return query.data ?? null;
+    }
+
+    const baseSnapshot =
+      query.data ??
+      createOptimisticPortfolioSnapshot(account as `0x${string}`);
+
+    return mergeOptimisticPortfolioBuys(baseSnapshot, optimisticBuys);
+  }, [account, enabled, optimisticBuys, query.data]);
+
+  const hasOptimisticPositions =
+    !query.data &&
+    !!mergedSnapshot &&
+    (mergedSnapshot.active.length > 0 || mergedSnapshot.settled.length > 0);
+
   return {
     account,
     isAuthenticated,
-    snapshot: query.data ?? null,
-    loading: query.isLoading || (query.isFetching && !query.data),
+    snapshot: mergedSnapshot,
+    loading: (query.isLoading || (query.isFetching && !query.data)) && !hasOptimisticPositions,
     isFetching: query.isFetching,
     error: query.error instanceof Error ? query.error.message : null,
     refetch

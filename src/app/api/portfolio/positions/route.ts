@@ -20,6 +20,7 @@ const ACTIVE_MARKET_PAGE_LIMIT = 6;
 const ONCHAIN_ENRICH_TIMEOUT_MS = 20_000;
 const LIGHT_ONCHAIN_ENRICH_TIMEOUT_MS = 12_000;
 const HISTORY_SUMMARY_TIMEOUT_MS = 8_000;
+const QUICK_HISTORY_RPC_META_LIMIT = 40;
 const SNAPSHOT_CACHE_TTL_SECONDS = 300;
 const FAST_SNAPSHOT_MAX_AGE_MS = 20_000;
 const STALE_SNAPSHOT_MAX_AGE_MS = SNAPSHOT_CACHE_TTL_SECONDS * 1000;
@@ -117,6 +118,13 @@ type BlockscoutHistoryEvent = {
 type LatestActivityRecord = {
   timestamp?: string;
   timestampMs: number;
+};
+
+type RecentTransferFetchOptions = {
+  lookbackBlocks?: number;
+  windowSize?: number;
+  maxTransfers?: number;
+  rpcUrls?: string[];
 };
 
 function parsePositiveInteger(
@@ -234,13 +242,22 @@ function parseOutcomeSide(raw: unknown): PositionSide | null {
   return null;
 }
 
-async function fetchRecentIncomingCtTransfers(account: string): Promise<RecentIncomingTransfer[]> {
-  const rpcUrls = getBaseRpcUrls();
+async function fetchRecentIncomingCtTransfers(
+  account: string,
+  options: RecentTransferFetchOptions = {}
+): Promise<RecentIncomingTransfer[]> {
+  const rpcUrls =
+    Array.isArray(options.rpcUrls) && options.rpcUrls.length > 0
+      ? options.rpcUrls
+      : getBaseRpcUrls();
   const TRANSFER_SINGLE_TOPIC =
     "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62";
   const zeroTopic = "0x0000000000000000000000000000000000000000000000000000000000000000";
   const zeroAddress = "0x0000000000000000000000000000000000000000";
   const accountTopic = `0x${account.toLowerCase().slice(2).padStart(64, "0")}`;
+  const lookbackBlocks = Math.max(1_000, options.lookbackBlocks ?? 60_000);
+  const windowSize = Math.max(500, options.windowSize ?? 5_000);
+  const maxTransfers = Math.max(1, options.maxTransfers ?? Number.POSITIVE_INFINITY);
 
   for (const rpcUrl of rpcUrls) {
     try {
@@ -268,9 +285,9 @@ async function fetchRecentIncomingCtTransfers(account: string): Promise<RecentIn
       }
 
       const transfers: RecentIncomingTransfer[] = [];
-      const fromBlock = Math.max(0, latestBlock - 60_000);
-      for (let windowEnd = latestBlock; windowEnd >= fromBlock; windowEnd -= 5_000) {
-        const windowStart = Math.max(fromBlock, windowEnd - 4_999);
+      const fromBlock = Math.max(0, latestBlock - lookbackBlocks);
+      for (let windowEnd = latestBlock; windowEnd >= fromBlock; windowEnd -= windowSize) {
+        const windowStart = Math.max(fromBlock, windowEnd - (windowSize - 1));
         const logs = await callRpc<unknown[]>(
           rpcUrl,
           "eth_getLogs",
@@ -319,6 +336,9 @@ async function fetchRecentIncomingCtTransfers(account: string): Promise<RecentIn
                   ? new Date(Number(BigInt(log.blockTimestamp)) * 1000).toISOString()
                   : undefined
             });
+            if (transfers.length >= maxTransfers) {
+              return transfers.slice(0, maxTransfers);
+            }
           } catch {
             continue;
           }
@@ -326,7 +346,7 @@ async function fetchRecentIncomingCtTransfers(account: string): Promise<RecentIn
       }
 
       if (transfers.length > 0) {
-        return transfers;
+        return transfers.slice(0, maxTransfers);
       }
     } catch {
       continue;
@@ -1881,6 +1901,17 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
   const historyEvents: BlockscoutHistoryEvent[] = [];
   const usdcSpentByTx = new Map<string, bigint>();
   const usdcReceivedByTx = new Map<string, bigint>();
+  const txHashes = new Set<string>();
+  const recentIncomingTransfersPromise = fetchRecentIncomingCtTransfers(account, {
+    lookbackBlocks: 5_000,
+    windowSize: 1_000,
+    maxTransfers: 12,
+    rpcUrls: [
+      process.env.NEXT_PUBLIC_BASE_RPC_URL,
+      "https://base.drpc.org",
+      "https://mainnet.base.org"
+    ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
+  });
 
   const fetchCtTransfers = async (direction: "in" | "out") => {
     let nextPageParams: string | null = null;
@@ -1939,6 +1970,9 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
         const txHash =
           (typeof record.transaction_hash === "string" ? record.transaction_hash : undefined) ??
           (typeof record.tx_hash === "string" ? record.tx_hash : undefined);
+        if (txHash) {
+          txHashes.add(txHash);
+        }
 
         const from = record.from as Record<string, unknown> | undefined;
         const to = record.to as Record<string, unknown> | undefined;
@@ -2024,6 +2058,7 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
         if (!txHash) {
           continue;
         }
+        txHashes.add(txHash);
 
         const total = record.total as Record<string, unknown> | undefined;
         const rawValue =
@@ -2064,15 +2099,85 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
     }
   };
 
-  await Promise.all([
+  const [, , , recentIncomingTransfers] = await Promise.all([
     fetchCtTransfers("in"),
     fetchCtTransfers("out"),
-    fetchUsdcTransfers()
+    fetchUsdcTransfers(),
+    recentIncomingTransfersPromise
   ]);
+
+  const recentIncomingTxHashes = new Set(
+    recentIncomingTransfers
+      .map((transfer) => transfer.txHash)
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+  );
+
+  for (const transfer of recentIncomingTransfers) {
+    if (transfer.txHash) {
+      txHashes.add(transfer.txHash);
+    }
+
+    historyEvents.push({
+      direction: "in",
+      action: "buy",
+      contractAddress: transfer.contractAddress,
+      tokenId: transfer.tokenId,
+      tokenAmount: normalizeRawTokenAmount(transfer.tokenAmountRaw, 6),
+      txHash: transfer.txHash,
+      timestamp: transfer.timestamp
+    });
+  }
+
+  const txMetaByHash = new Map<string, Awaited<ReturnType<typeof fetchRpcTransactionMeta>>>();
+  const txHashesNeedingRpcMeta = Array.from(txHashes).filter((txHash) => {
+    const needsAmounts =
+      recentIncomingTxHashes.has(txHash) &&
+      (usdcSpentByTx.get(txHash) ?? 0n) === 0n &&
+      (usdcReceivedByTx.get(txHash) ?? 0n) === 0n;
+    const needsContractAddress = historyEvents.some((event) => event.txHash === txHash && !event.contractAddress);
+    return needsAmounts || needsContractAddress;
+  });
+
+  await Promise.all(
+    txHashesNeedingRpcMeta
+      .slice(0, Math.min(QUICK_HISTORY_RPC_META_LIMIT, BLOCKSCOUT_TX_META_LIMIT))
+      .map(async (txHash) => {
+        const meta = await fetchRpcTransactionMeta(txHash, account);
+        if (!meta) {
+          return;
+        }
+
+        txMetaByHash.set(txHash, meta);
+
+        if ((usdcSpentByTx.get(txHash) ?? 0n) === 0n && meta.costUsdc) {
+          usdcSpentByTx.set(txHash, BigInt(Math.round(Number(meta.costUsdc) * 1_000_000)));
+        }
+
+        if ((usdcReceivedByTx.get(txHash) ?? 0n) === 0n && meta.proceedsUsdc) {
+          usdcReceivedByTx.set(txHash, BigInt(Math.round(Number(meta.proceedsUsdc) * 1_000_000)));
+        }
+      })
+  );
+
+  const normalizedHistoryEvents = historyEvents.map((event) => {
+    if (event.contractAddress || !event.txHash) {
+      return event;
+    }
+
+    const meta = txMetaByHash.get(event.txHash);
+    if (!meta?.contractAddress || !isAddress(meta.contractAddress)) {
+      return event;
+    }
+
+    return {
+      ...event,
+      contractAddress: meta.contractAddress.toLowerCase()
+    };
+  });
 
   const historyAddresses = Array.from(
     new Set(
-      historyEvents
+      normalizedHistoryEvents
         .map((event) => event.contractAddress?.toLowerCase())
         .filter((value): value is string => Boolean(value))
     )
@@ -2119,7 +2224,7 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
   const countedBuyTxKeys = new Set<string>();
   const countedExitTxKeys = new Set<string>();
 
-  const orderedEvents = [...historyEvents].sort(
+  const orderedEvents = [...normalizedHistoryEvents].sort(
     (left, right) => parseTimestampMs(left.timestamp) - parseTimestampMs(right.timestamp)
   );
 

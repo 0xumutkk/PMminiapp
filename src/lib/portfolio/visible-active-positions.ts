@@ -51,5 +51,15 @@ export function filterVisibleActivePositions(
   });
 
   const visible = activeWithoutSoldDust.filter(isVisibleActivePosition);
-  return visible.length > 0 ? visible : activeWithoutSoldDust;
+  if (visible.length > 0) {
+    return visible;
+  }
+
+  if (activeWithoutSoldDust.length > 0) {
+    return activeWithoutSoldDust;
+  }
+
+  // If sold-dust suppression would hide every active position, keep showing the
+  // raw active rows so the profile never drops to a misleading zero-state.
+  return active;
 }

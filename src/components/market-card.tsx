@@ -274,6 +274,7 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
     setLocalError(null);
     await executeTrade({
       marketId: market.id,
+      marketTitle: market.title,
       side,
       amountUsdc,
       expectedPrice: side === "yes" ? market.yesPrice : market.noPrice,

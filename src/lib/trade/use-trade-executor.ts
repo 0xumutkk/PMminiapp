@@ -2,8 +2,13 @@
 
 import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
 import { getPortfolioPositionsQueryKey } from "@/lib/portfolio/use-portfolio-positions";
+import {
+  shouldUseDirectTransactionSubmission
+} from "@/lib/trade/execution-strategy";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPublicClient, http } from "viem";
+import { base } from "viem/chains";
 import {
   useAccount,
   useChainId,
@@ -184,11 +189,22 @@ function actionLabel(action: TradeIntentAction) {
 }
 
 export function useTradeExecutor() {
-  const { address, isConnected } = useAccount();
+  const { address, connector, isConnected } = useAccount();
   const { user, getAuthHeaders } = useMiniAppAuth();
   const queryClient = useQueryClient();
   const chainId = useChainId();
   const publicClient = usePublicClient({ chainId });
+  const confirmationClient = useMemo(
+    () =>
+      publicClient ??
+      createPublicClient({
+        chain: base,
+        transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org", {
+          timeout: 15_000
+        })
+      }),
+    [publicClient]
+  );
 
   const tradeAddress = address;
 
@@ -366,12 +382,6 @@ export function useTradeExecutor() {
         }));
         const totalCalls = calls.length;
         const intentMeta = (body as TradeIntentSuccess).meta;
-        console.log("[TradeExecutor] Intent prepared", {
-          action: params.action,
-          marketId: params.marketId,
-          totalCalls,
-          meta: intentMeta
-        });
         const pendingTrade: ConfirmedTrade = {
           action: params.action,
           marketId: params.marketId,
@@ -384,25 +394,14 @@ export function useTradeExecutor() {
         setState((current) => ({ ...current, status: "awaiting_signature", error: null }));
 
         try {
-          if (totalCalls === 1) {
+          if (shouldUseDirectTransactionSubmission(totalCalls, connector?.id)) {
             const [call] = calls;
-            console.log("[TradeExecutor] Sending single transaction", {
-              action: pendingTrade.action,
-              marketId: pendingTrade.marketId,
-              to: call.to,
-              value: call.value.toString()
-            });
             const hash = await sendTransactionAsync({
               account: address,
               chainId,
               to: call.to,
               data: call.data,
               value: call.value
-            });
-            console.log("[TradeExecutor] Single transaction hash", {
-              action: pendingTrade.action,
-              marketId: pendingTrade.marketId,
-              hash
             });
 
             setState((current) => ({
@@ -416,22 +415,14 @@ export function useTradeExecutor() {
               pendingTrade
             }));
 
-            if (publicClient) {
-              const receipt = await publicClient.waitForTransactionReceipt({
-                hash,
-                confirmations: 1,
-                timeout: 120_000
-              });
-              console.log("[TradeExecutor] Single transaction receipt", {
-                action: pendingTrade.action,
-                marketId: pendingTrade.marketId,
-                hash,
-                status: receipt.status
-              });
+            const receipt = await confirmationClient.waitForTransactionReceipt({
+              hash,
+              confirmations: 1,
+              timeout: 120_000
+            });
 
-              if (receipt.status !== "success") {
-                throw new Error(`Transaction reverted: ${hash}`);
-              }
+            if (receipt.status !== "success") {
+              throw new Error(`Transaction reverted: ${hash}`);
             }
 
             setState((current) => ({
@@ -466,12 +457,6 @@ export function useTradeExecutor() {
             calls,
             forceAtomic: true
           });
-          console.log("[TradeExecutor] Batch submitted", {
-            action: pendingTrade.action,
-            marketId: pendingTrade.marketId,
-            batchId: batch.id,
-            totalCalls
-          });
 
           setState((current) => ({
             ...current,
@@ -484,12 +469,7 @@ export function useTradeExecutor() {
             pendingTrade
           }));
           return;
-        } catch (batchOrSendError) {
-          console.warn("[TradeExecutor] Falling back to sequential sends", {
-            action: pendingTrade.action,
-            marketId: pendingTrade.marketId,
-            message: errorToMessage(batchOrSendError)
-          });
+        } catch {
           // Fallback for wallets without EIP-5792 support: send sequential transactions.
           const txHashes: `0x${string}`[] = [];
 
@@ -511,13 +491,6 @@ export function useTradeExecutor() {
               data: call.data,
               value: call.value
             });
-            console.log("[TradeExecutor] Sequential transaction hash", {
-              action: pendingTrade.action,
-              marketId: pendingTrade.marketId,
-              hash,
-              index: txHashes.length + 1,
-              totalCalls
-            });
 
             txHashes.push(hash);
             setState((current) => ({
@@ -533,21 +506,13 @@ export function useTradeExecutor() {
             // before asking the wallet to sign the next one. Otherwise, the wallet's local
             // simulation (eth_estimateGas) for the next transaction (e.g. Trade) will fail
             // because the state change (e.g. USDC Approve) hasn't been confirmed on-chain yet.
-            if (publicClient) {
-              const receipt = await publicClient.waitForTransactionReceipt({
-                hash,
-                confirmations: 1,
-                timeout: 120_000
-              });
-              console.log("[TradeExecutor] Sequential transaction receipt", {
-                action: pendingTrade.action,
-                marketId: pendingTrade.marketId,
-                hash,
-                status: receipt.status
-              });
-              if (receipt.status !== "success") {
-                throw new Error(`Transaction reverted: ${hash}`);
-              }
+            const receipt = await confirmationClient.waitForTransactionReceipt({
+              hash,
+              confirmations: 1,
+              timeout: 120_000
+            });
+            if (receipt.status !== "success") {
+              throw new Error(`Transaction reverted: ${hash}`);
             }
           }
 
@@ -587,7 +552,7 @@ export function useTradeExecutor() {
         }));
       }
     },
-    [address, applyOptimisticPortfolioUpdate, chainId, isConnected, publicClient, sendCallsAsync, sendTransactionAsync, tradeAddress, user, getAuthHeaders]
+    [address, applyOptimisticPortfolioUpdate, chainId, confirmationClient, connector?.id, isConnected, sendCallsAsync, sendTransactionAsync, tradeAddress, user, getAuthHeaders]
   );
 
   const executeTrade = useCallback(

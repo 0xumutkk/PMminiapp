@@ -47,7 +47,7 @@ beforeEach(() => {
   process.env.TRADE_MAX_USDC = "1000";
 
   (globalThis as { __apiRateLimitStore?: unknown }).__apiRateLimitStore = undefined;
-  (globalThis as { __marketIndexer?: { start: () => Promise<void>; getSnapshot: () => Promise<null> } }).__marketIndexer =
+  (globalThis as { __marketIndexer_v2?: { start: () => Promise<void>; getSnapshot: () => Promise<null> } }).__marketIndexer_v2 =
     {
       start: async () => {},
       getSnapshot: async () => null
@@ -98,7 +98,7 @@ afterEach(() => {
     process.env[key] = previous;
   }
 
-  (globalThis as { __marketIndexer?: unknown }).__marketIndexer = undefined;
+  (globalThis as { __marketIndexer_v2?: unknown }).__marketIndexer_v2 = undefined;
   (globalThis as { __apiRateLimitStore?: unknown }).__apiRateLimitStore = undefined;
   globalThis.fetch = ORIGINAL_FETCH;
 });

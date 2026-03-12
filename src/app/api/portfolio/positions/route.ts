@@ -2409,6 +2409,47 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
   };
 }
 
+async function fetchReconciledBlockscoutHistorySnapshot(account: `0x${string}`) {
+  const historySnapshot = await withTimeout(
+    fetchBlockscoutHistorySnapshot(account),
+    12_000,
+    "Blockscout history snapshot"
+  );
+
+  if (historySnapshot.active.length === 0 && historySnapshot.settled.length === 0) {
+    return null;
+  }
+
+  const claimableAddresses = Array.from(
+    new Set(
+      historySnapshot.settled
+        .filter((position) => position.claimable && isAddress(position.marketId))
+        .map((position) => position.marketId as `0x${string}`)
+    )
+  );
+
+  if (claimableAddresses.length === 0) {
+    return historySnapshot;
+  }
+
+  try {
+    const claimableMarkets = await fetchAmmMarketsForOnchain(claimableAddresses, false);
+    const claimableOnchainSnapshot = await withTimeout(
+      fetchOnchainAmmPositions(account, claimableMarkets, {}),
+      8_000,
+      "Claimable on-chain reconciliation"
+    );
+    return reconcileClaimableSettledWithOnchain(
+      historySnapshot,
+      claimableOnchainSnapshot,
+      claimableMarkets
+    );
+  } catch (error) {
+    console.warn("[Positions API] Claimable on-chain reconciliation failed:", error);
+    return historySnapshot;
+  }
+}
+
 function formatDecimalString(value: number) {
   if (!Number.isFinite(value)) {
     return "0";
@@ -2935,6 +2976,18 @@ function mergeHistoricalSettledPositions(
   };
 }
 
+function combineHistoricalSettledSources(
+  account: `0x${string}`,
+  primarySettled: TrackedPosition[],
+  supplementalSettled: TrackedPosition[]
+) {
+  return mergeHistoricalSettledPositions(
+    createPortfolioSnapshot(account, [], primarySettled),
+    account,
+    supplementalSettled
+  ).settled;
+}
+
 function mergePosition(primary: TrackedPosition, fallback: TrackedPosition): TrackedPosition {
   return {
     ...fallback,
@@ -3222,45 +3275,17 @@ export async function GET(request: Request) {
       return respondWithSnapshot(rawPublicPortfolio);
     }
 
-    if (!hasPublicPositions) {
+    const shouldAttemptBlockscoutHistoryBackfill =
+      !hasPublicPositions ||
+      (forceFresh && rawPublicPortfolio !== null && rawPublicPortfolio.settled.length === 0);
+
+    let blockscoutHistorySnapshot: PortfolioPositionsSnapshot | null = null;
+    if (shouldAttemptBlockscoutHistoryBackfill) {
       try {
-        const historySnapshot = await withTimeout(
-          fetchBlockscoutHistorySnapshot(account as `0x${string}`),
-          12_000,
-          "Blockscout history snapshot"
-        );
-
-        if (historySnapshot.active.length > 0 || historySnapshot.settled.length > 0) {
-          const claimableAddresses = Array.from(
-            new Set(
-              historySnapshot.settled
-                .filter((position) => position.claimable && isAddress(position.marketId))
-                .map((position) => position.marketId as `0x${string}`)
-            )
-          );
-
-          if (claimableAddresses.length > 0) {
-            try {
-              const claimableMarkets = await fetchAmmMarketsForOnchain(claimableAddresses, false);
-              const claimableOnchainSnapshot = await withTimeout(
-                fetchOnchainAmmPositions(account as `0x${string}`, claimableMarkets, {}),
-                8_000,
-                "Claimable on-chain reconciliation"
-              );
-              const reconciledHistorySnapshot = reconcileClaimableSettledWithOnchain(
-                historySnapshot,
-                claimableOnchainSnapshot,
-                claimableMarkets
-              );
-              headers.set("X-Positions-Source", "blockscout-history");
-              return respondWithSnapshot(reconciledHistorySnapshot);
-            } catch (error) {
-              console.warn("[Positions API] Claimable on-chain reconciliation failed:", error);
-            }
-          }
-
+        blockscoutHistorySnapshot = await fetchReconciledBlockscoutHistorySnapshot(account as `0x${string}`);
+        if (!hasPublicPositions && blockscoutHistorySnapshot) {
           headers.set("X-Positions-Source", "blockscout-history");
-          return respondWithSnapshot(historySnapshot);
+          return respondWithSnapshot(blockscoutHistorySnapshot);
         }
       } catch (error) {
         console.warn("[Positions API] Blockscout history snapshot failed:", error);
@@ -3306,7 +3331,11 @@ export async function GET(request: Request) {
       : [];
     const historySummary = augmentHistorySummaryWithTokenCostBasis(rawHistorySummary, ammMarkets);
     const publicPortfolio = enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, ammMarkets);
-    const historicalSettled = buildHistoricalSettledPositions(historySummary, ammMarkets, publicPortfolio);
+    const historicalSettled = combineHistoricalSettledSources(
+      account as `0x${string}`,
+      buildHistoricalSettledPositions(historySummary, ammMarkets, publicPortfolio),
+      blockscoutHistorySnapshot?.settled ?? []
+    );
 
     // 3. Create cost basis map keyed as `${marketId}:${side}`.
     // Public portfolio data is exact and should win; history-derived cost is fallback.
@@ -3435,6 +3464,7 @@ declare global {
     | {
         stabilizeSnapshotWithCache: typeof stabilizeSnapshotWithCache;
         mergeHistoricalSettledPositions: typeof mergeHistoricalSettledPositions;
+        combineHistoricalSettledSources: typeof combineHistoricalSettledSources;
         reconcileClaimableSettledWithOnchain: typeof reconcileClaimableSettledWithOnchain;
         sortSnapshotByStoredRecency: typeof sortSnapshotByStoredRecency;
       }
@@ -3445,6 +3475,7 @@ if (process.env.NODE_ENV === "test") {
   globalThis.__positionsRouteTestHelpers = {
     stabilizeSnapshotWithCache,
     mergeHistoricalSettledPositions,
+    combineHistoricalSettledSources,
     reconcileClaimableSettledWithOnchain,
     sortSnapshotByStoredRecency
   };

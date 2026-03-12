@@ -15,6 +15,11 @@ type TestHelpers = {
     account: `0x${string}`,
     historicalSettled: TrackedPosition[]
   ) => PortfolioPositionsSnapshot;
+  combineHistoricalSettledSources: (
+    account: `0x${string}`,
+    primarySettled: TrackedPosition[],
+    supplementalSettled: TrackedPosition[]
+  ) => TrackedPosition[];
   reconcileClaimableSettledWithOnchain: (
     snapshot: PortfolioPositionsSnapshot,
     onchainSnapshot: PortfolioPositionsSnapshot,
@@ -154,6 +159,25 @@ test("mergeHistoricalSettledPositions keeps sold exits separate from claimable s
   assert.equal(exitRow.claimable, false);
   assert.equal(exitRow.marketValueUsdc, "0.810283");
   assert.equal(exitRow.isSold, true);
+});
+
+test("combineHistoricalSettledSources preserves supplemental blockscout history when transfer history is empty", () => {
+  const supplementalExit = buildSettledPosition({
+    id: `${MARKET_ID}:yes:exit`,
+    marketValueUsdc: "0.810283",
+    isSold: true
+  });
+
+  const result = testHelpers.combineHistoricalSettledSources(
+    ACCOUNT,
+    [],
+    [supplementalExit]
+  );
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.id, `${MARKET_ID}:yes:exit`);
+  assert.equal(result[0]?.marketValueUsdc, "0.810283");
+  assert.equal(result[0]?.isSold, true);
 });
 
 test("reconcileClaimableSettledWithOnchain converts stale claimable rows into redeemed history when live balance is gone", () => {

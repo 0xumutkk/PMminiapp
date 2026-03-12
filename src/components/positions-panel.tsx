@@ -82,6 +82,7 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
   const router = useRouter();
   const [interactionError, setInteractionError] = useState<string | null>(null);
   const [activeActionId, setActiveActionId] = useState<string | null>(null);
+  const [showSmallPositions, setShowSmallPositions] = useState(false);
   const error = interactionError ?? state.error ?? queryError;
   const tradeNotice =
     !error && (isBusy || state.status === "submitted" || state.status === "confirmed")
@@ -118,12 +119,18 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     if (!loading && (activePositions.length > 0 || smallPositions.length > 0) && typeof window !== 'undefined') {
       const hash = window.location.hash;
       if (hash && hash.startsWith('#market-')) {
-        // Wait a tick for DOM to be stable
+        const targetId = hash.slice(1);
+        const targetsSmallPosition = smallPositions.some((position) => `market-${position.marketId}` === targetId);
+        if (targetsSmallPosition && !showSmallPositions) {
+          setShowSmallPositions(true);
+        }
+
+        // Wait a tick for DOM to be stable.
         const timer = setTimeout(() => {
-          const el = document.getElementById(hash.slice(1));
+          const el = document.getElementById(targetId);
           if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            // Add a temporary highlight effect
+            // Add a temporary highlight effect.
             el.style.transition = 'background-color 0.5s ease';
             const originalBg = el.style.backgroundColor;
             el.style.backgroundColor = 'rgba(11, 213, 45, 0.1)';
@@ -131,11 +138,11 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
               el.style.backgroundColor = originalBg;
             }, 2000);
           }
-        }, 300);
+        }, targetsSmallPosition ? 450 : 300);
         return () => clearTimeout(timer);
       }
     }
-  }, [activePositions.length, filter, loading, smallPositions.length]);
+  }, [activePositions.length, filter, loading, showSmallPositions, smallPositions]);
 
   const onSell = useCallback(async (position: ActivePosition) => {
     if (!isConnected || !account) return;
@@ -268,15 +275,39 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
         )}
         {smallPositions.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: activePositions.length > 0 ? '8px' : '0' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
-              <span style={{ fontSize: '12px', fontWeight: '700', color: 'rgba(255,255,255,0.82)', letterSpacing: '0.02em' }}>
-                Small Positions
+            <button
+              type="button"
+              onClick={() => setShowSmallPositions((current) => !current)}
+              aria-expanded={showSmallPositions}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '12px',
+                width: '100%',
+                padding: '12px 14px',
+                borderRadius: '18px',
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.04)',
+                cursor: 'pointer'
+              }}
+            >
+              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '2px' }}>
+                <span style={{ fontSize: '12px', fontWeight: '700', color: 'rgba(255,255,255,0.82)', letterSpacing: '0.02em' }}>
+                  Small Positions
+                </span>
+                <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>
+                  Below 0.1 shares · {smallPositions.length} market{smallPositions.length === 1 ? '' : 's'}
+                </span>
               </span>
-              <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)' }}>
-                Below 0.1 shares
+              <span
+                aria-hidden="true"
+                style={{ fontSize: '14px', fontWeight: '700', color: 'rgba(255,255,255,0.7)' }}
+              >
+                {showSmallPositions ? '▾' : '▸'}
               </span>
-            </div>
-            {smallPositions.map(renderActivePositionCard)}
+            </button>
+            {showSmallPositions && smallPositions.map(renderActivePositionCard)}
           </div>
         )}
       </section>

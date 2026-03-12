@@ -272,6 +272,57 @@ export function useTradeExecutor() {
         setState((current) => ({ ...current, status: "awaiting_signature", error: null }));
 
         try {
+          if (totalCalls === 1) {
+            const [call] = calls;
+            const hash = await sendTransactionAsync({
+              account: address,
+              chainId,
+              to: call.to,
+              data: call.data,
+              value: call.value
+            });
+
+            setState((current) => ({
+              ...current,
+              status: "submitted",
+              error: null,
+              batchId: null,
+              totalCalls: 1,
+              submittedCalls: 1,
+              txHashes: [hash],
+              pendingTrade
+            }));
+
+            if (publicClient) {
+              const receipt = await publicClient.waitForTransactionReceipt({
+                hash,
+                confirmations: 1,
+                timeout: 120_000
+              });
+
+              if (receipt.status !== "success") {
+                throw new Error(`Transaction reverted: ${hash}`);
+              }
+            }
+
+            setState((current) => ({
+              ...current,
+              status: "confirmed",
+              error: null,
+              batchId: null,
+              totalCalls: 0,
+              submittedCalls: 0,
+              txHashes: [hash],
+              pendingTrade: null,
+              lastConfirmedTrade: {
+                ...pendingTrade,
+                confirmedAt: new Date().toISOString()
+              }
+            }));
+            notifyPositionsRefresh();
+            return;
+          }
+
           const batch = await sendCallsAsync({
             account: address,
             chainId,

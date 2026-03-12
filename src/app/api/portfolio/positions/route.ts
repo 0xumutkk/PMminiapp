@@ -2749,6 +2749,72 @@ function mergePosition(primary: TrackedPosition, fallback: TrackedPosition): Tra
   };
 }
 
+function reconcileClaimableSettledWithOnchain(
+  snapshot: PortfolioPositionsSnapshot,
+  onchainSnapshot: PortfolioPositionsSnapshot,
+  ammMarkets: AmmMarketRef[]
+) {
+  const knownKeys = new Set<string>();
+  for (const market of ammMarkets) {
+    for (const side of ["yes", "no"] as const) {
+      if (market.contractAddress) {
+        knownKeys.add(`${market.contractAddress.toLowerCase()}:${side}`);
+      }
+      if (market.slug) {
+        knownKeys.add(`${market.slug.toLowerCase()}:${side}`);
+      }
+      if (market.id) {
+        knownKeys.add(`${market.id.toLowerCase()}:${side}`);
+      }
+    }
+  }
+
+  const liveKeys = new Set<string>();
+  for (const position of [...onchainSnapshot.active, ...onchainSnapshot.settled]) {
+    for (const key of buildPositionLookupKeys(position)) {
+      liveKeys.add(key);
+    }
+  }
+
+  let changed = false;
+  const settled = snapshot.settled.map((position) => {
+    if (!position.claimable) {
+      return position;
+    }
+
+    const positionKeys = buildPositionLookupKeys(position);
+    const isTrackedByOnchain = positionKeys.some((key) => knownKeys.has(key));
+    const hasLiveBalance = positionKeys.some((key) => liveKeys.has(key));
+
+    if (!isTrackedByOnchain || hasLiveBalance) {
+      return position;
+    }
+
+    changed = true;
+    const proceeds = Number(position.marketValueUsdc);
+    const cost = Number(position.costUsdc);
+
+    return {
+      ...position,
+      claimable: false,
+      tokenBalance: "0",
+      currentPrice: typeof position.currentPrice === "number" ? position.currentPrice : 1,
+      realizedPnlUsdc: formatDecimalString(proceeds - cost),
+      isRedeemed: true
+    };
+  });
+
+  if (!changed) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    settled,
+    totals: recomputeTotals(snapshot.active, settled)
+  };
+}
+
 function enrichPublicPortfolioSnapshotWithMarketPrices(
   publicPortfolio: PortfolioPositionsSnapshot | null,
   ammMarkets: AmmMarketRef[]
@@ -2968,6 +3034,34 @@ export async function GET(request: Request) {
         );
 
         if (historySnapshot.active.length > 0 || historySnapshot.settled.length > 0) {
+          const claimableAddresses = Array.from(
+            new Set(
+              historySnapshot.settled
+                .filter((position) => position.claimable && isAddress(position.marketId))
+                .map((position) => position.marketId as `0x${string}`)
+            )
+          );
+
+          if (claimableAddresses.length > 0) {
+            try {
+              const claimableMarkets = await fetchAmmMarketsForOnchain(claimableAddresses, false);
+              const claimableOnchainSnapshot = await withTimeout(
+                fetchOnchainAmmPositions(account as `0x${string}`, claimableMarkets, {}),
+                8_000,
+                "Claimable on-chain reconciliation"
+              );
+              const reconciledHistorySnapshot = reconcileClaimableSettledWithOnchain(
+                historySnapshot,
+                claimableOnchainSnapshot,
+                claimableMarkets
+              );
+              headers.set("X-Positions-Source", "blockscout-history");
+              return respondWithSnapshot(reconciledHistorySnapshot);
+            } catch (error) {
+              console.warn("[Positions API] Claimable on-chain reconciliation failed:", error);
+            }
+          }
+
           headers.set("X-Positions-Source", "blockscout-history");
           return respondWithSnapshot(historySnapshot);
         }
@@ -3110,10 +3204,14 @@ export async function GET(request: Request) {
       onchainSnapshot
     );
     const finalSnapshot = sortSnapshotActivePositions(
-      mergeHistoricalSettledPositions(
-        mergedSnapshot,
-        account as `0x${string}`,
-        historicalSettled
+      reconcileClaimableSettledWithOnchain(
+        mergeHistoricalSettledPositions(
+          mergedSnapshot,
+          account as `0x${string}`,
+          historicalSettled
+        ),
+        onchainSnapshot,
+        ammMarkets
       ),
       historySummary,
       ammMarkets
@@ -3140,6 +3238,7 @@ declare global {
     | {
         stabilizeSnapshotWithCache: typeof stabilizeSnapshotWithCache;
         mergeHistoricalSettledPositions: typeof mergeHistoricalSettledPositions;
+        reconcileClaimableSettledWithOnchain: typeof reconcileClaimableSettledWithOnchain;
       }
     | undefined;
 }
@@ -3147,6 +3246,7 @@ declare global {
 if (process.env.NODE_ENV === "test") {
   globalThis.__positionsRouteTestHelpers = {
     stabilizeSnapshotWithCache,
-    mergeHistoricalSettledPositions
+    mergeHistoricalSettledPositions,
+    reconcileClaimableSettledWithOnchain
   };
 }

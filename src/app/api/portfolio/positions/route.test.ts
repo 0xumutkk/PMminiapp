@@ -15,6 +15,16 @@ type TestHelpers = {
     account: `0x${string}`,
     historicalSettled: TrackedPosition[]
   ) => PortfolioPositionsSnapshot;
+  reconcileClaimableSettledWithOnchain: (
+    snapshot: PortfolioPositionsSnapshot,
+    onchainSnapshot: PortfolioPositionsSnapshot,
+    ammMarkets: Array<{
+      id: string;
+      slug: string;
+      title: string;
+      contractAddress: `0x${string}`;
+    }>
+  ) => PortfolioPositionsSnapshot;
 };
 
 let testHelpers: TestHelpers;
@@ -141,4 +151,48 @@ test("mergeHistoricalSettledPositions keeps sold exits separate from claimable s
   assert.equal(exitRow.claimable, false);
   assert.equal(exitRow.marketValueUsdc, "0.810283");
   assert.equal(exitRow.isSold, true);
+});
+
+test("reconcileClaimableSettledWithOnchain converts stale claimable rows into redeemed history when live balance is gone", () => {
+  const staleClaimable = buildSettledPosition({
+    id: `${MARKET_ID}:yes`,
+    claimable: true,
+    marketValueUsdc: "0.151683",
+    tokenBalance: "0.151683",
+    currentPrice: 1
+  });
+
+  const result = testHelpers.reconcileClaimableSettledWithOnchain(
+    buildSnapshot([staleClaimable]),
+    {
+      account: ACCOUNT,
+      fetchedAt: "2026-03-12T12:05:00.000Z",
+      active: [],
+      settled: [],
+      totals: {
+        activeMarketValueUsdc: "0",
+        unrealizedPnlUsdc: "0",
+        claimableUsdc: "0"
+      }
+    },
+    [
+      {
+        id: MARKET_ID,
+        slug: MARKET_SLUG,
+        title: MARKET_TITLE,
+        contractAddress: MARKET_ID as `0x${string}`
+      }
+    ]
+  );
+
+  const claimableRows = result.settled.filter((item) => item.claimable);
+  assert.equal(claimableRows.length, 0);
+
+  const redeemedRow = result.settled.find((item) => item.id === `${MARKET_ID}:yes`);
+  assert.ok(redeemedRow);
+  assert.equal(redeemedRow.claimable, false);
+  assert.equal(redeemedRow.isRedeemed, true);
+  assert.equal(redeemedRow.tokenBalance, "0");
+  assert.equal(redeemedRow.marketValueUsdc, "0.151683");
+  assert.equal(redeemedRow.currentPrice, 1);
 });

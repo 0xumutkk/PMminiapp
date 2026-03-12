@@ -100,6 +100,14 @@ function notifyPositionsRefresh() {
   window.dispatchEvent(new CustomEvent("positions:refresh"));
 }
 
+function notifyBalanceRefresh() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent("portfolio:balance-refresh"));
+}
+
 function normalizeTradeMarketRef(value: string | undefined) {
   if (!value || typeof value !== "string") {
     return "";
@@ -194,6 +202,10 @@ function actionLabel(action: TradeIntentAction) {
     return "redeem";
   }
   return "trade";
+}
+
+function shouldRefreshBalanceOnConfirmation(action: TradeIntentAction | null | undefined) {
+  return action === "sell" || action === "redeem";
 }
 
 export function useTradeExecutor() {
@@ -335,6 +347,9 @@ export function useTradeExecutor() {
           pendingTrade: null
         }));
         applyOptimisticPortfolioUpdate(confirmedTrade);
+        if (shouldRefreshBalanceOnConfirmation(confirmedTrade?.action)) {
+          notifyBalanceRefresh();
+        }
         if (confirmedTrade?.action === "redeem") {
           window.setTimeout(() => notifyPositionsRefresh(), 15_000);
         } else {
@@ -501,6 +516,9 @@ export function useTradeExecutor() {
               ...pendingTrade,
               confirmedAt: new Date().toISOString()
             });
+            if (shouldRefreshBalanceOnConfirmation(pendingTrade.action)) {
+              notifyBalanceRefresh();
+            }
             if (pendingTrade.action === "redeem") {
               window.setTimeout(() => notifyPositionsRefresh(), 15_000);
             } else {
@@ -597,6 +615,9 @@ export function useTradeExecutor() {
             ...pendingTrade,
             confirmedAt: new Date().toISOString()
           });
+          if (shouldRefreshBalanceOnConfirmation(pendingTrade.action)) {
+            notifyBalanceRefresh();
+          }
           if (pendingTrade.action === "redeem") {
             window.setTimeout(() => notifyPositionsRefresh(), 15_000);
           } else {

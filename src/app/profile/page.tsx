@@ -57,6 +57,17 @@ function ProfileContent() {
     }
   }, [isRefreshing, refetchBalance, refetchPositions]);
 
+  React.useEffect(() => {
+    const onBalanceRefresh = () => {
+      void refetchBalance();
+    };
+
+    window.addEventListener("portfolio:balance-refresh", onBalanceRefresh);
+    return () => {
+      window.removeEventListener("portfolio:balance-refresh", onBalanceRefresh);
+    };
+  }, [refetchBalance]);
+
   const handleTouchStart = (e: React.TouchEvent) => {
     // Use container's scrollTop if possible, fallback to window.scrollY
     const scrollTop = containerRef.current?.closest('.app-shell__content')?.scrollTop ?? window.scrollY;
@@ -93,8 +104,9 @@ function ProfileContent() {
   };
 
   const positionsValue = Number(snapshot?.totals.activeMarketValueUsdc ?? 0);
+  const claimableValue = Number(snapshot?.totals.claimableUsdc ?? 0);
   const usdcValue = Number(usdcBalance?.formatted ?? 0);
-  const totalNetWorth = positionsValue + usdcValue;
+  const totalNetWorth = positionsValue + claimableValue + usdcValue;
 
   const netWorthFormatted = formatUsd(totalNetWorth);
   const [dollars, cents] = netWorthFormatted.split('.');

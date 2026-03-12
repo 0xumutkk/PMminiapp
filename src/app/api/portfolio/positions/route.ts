@@ -20,6 +20,8 @@ const ACTIVE_MARKET_PAGE_LIMIT = 6;
 const ONCHAIN_ENRICH_TIMEOUT_MS = 20_000;
 const LIGHT_ONCHAIN_ENRICH_TIMEOUT_MS = 12_000;
 const HISTORY_SUMMARY_TIMEOUT_MS = 8_000;
+const RECENT_HISTORY_RPC_FALLBACK_TIMEOUT_MS = 3_500;
+const HISTORY_SUMMARY_RPC_FALLBACK_TIMEOUT_MS = 2_500;
 const QUICK_HISTORY_RPC_META_LIMIT = 40;
 const SNAPSHOT_CACHE_TTL_SECONDS = 300;
 const FAST_SNAPSHOT_MAX_AGE_MS = 20_000;
@@ -690,8 +692,18 @@ async function fetchTransferHistorySummary(account: string): Promise<TransferHis
   }
 
     const [recentIncomingTransfers, recentOutgoingTransfers] = await Promise.all([
-      fetchRecentIncomingCtTransfers(account),
-      fetchRecentOutgoingCtTransfers(account)
+      withFallbackOnTimeout(
+        fetchRecentIncomingCtTransfers(account),
+        HISTORY_SUMMARY_RPC_FALLBACK_TIMEOUT_MS,
+        "Recent incoming CT transfer summary scan",
+        [] as RecentIncomingTransfer[]
+      ),
+      withFallbackOnTimeout(
+        fetchRecentOutgoingCtTransfers(account),
+        HISTORY_SUMMARY_RPC_FALLBACK_TIMEOUT_MS,
+        "Recent outgoing CT transfer summary scan",
+        [] as RecentOutgoingTransfer[]
+      )
     ]);
 
     for (const transfer of recentIncomingTransfers) {
@@ -1895,6 +1907,20 @@ function parseTimestampMs(value?: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+async function withFallbackOnTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+  fallbackValue: T
+) {
+  try {
+    return await withTimeout(promise, timeoutMs, label);
+  } catch (error) {
+    console.warn(`[Positions API] ${label} failed:`, error);
+    return fallbackValue;
+  }
+}
+
 async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<PortfolioPositionsSnapshot> {
   const accountLower = account.toLowerCase();
   const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -1902,16 +1928,21 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
   const usdcSpentByTx = new Map<string, bigint>();
   const usdcReceivedByTx = new Map<string, bigint>();
   const txHashes = new Set<string>();
-  const recentIncomingTransfersPromise = fetchRecentIncomingCtTransfers(account, {
-    lookbackBlocks: 5_000,
-    windowSize: 1_000,
-    maxTransfers: 12,
-    rpcUrls: [
-      process.env.NEXT_PUBLIC_BASE_RPC_URL,
-      "https://base.drpc.org",
-      "https://mainnet.base.org"
-    ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
-  });
+  const recentIncomingTransfersPromise = withFallbackOnTimeout(
+    fetchRecentIncomingCtTransfers(account, {
+      lookbackBlocks: 5_000,
+      windowSize: 1_000,
+      maxTransfers: 12,
+      rpcUrls: [
+        process.env.NEXT_PUBLIC_BASE_RPC_URL,
+        "https://base.drpc.org",
+        "https://mainnet.base.org"
+      ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
+    }),
+    RECENT_HISTORY_RPC_FALLBACK_TIMEOUT_MS,
+    "Recent incoming CT history scan",
+    [] as RecentIncomingTransfer[]
+  );
 
   const fetchCtTransfers = async (direction: "in" | "out") => {
     let nextPageParams: string | null = null;

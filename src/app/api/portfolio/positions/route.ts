@@ -1527,7 +1527,8 @@ function mergeHistoricalSettledPosition(existing: TrackedPosition, historical: T
     endsAt: historical.endsAt ?? existing.endsAt,
     claimable: existing.claimable || historical.claimable,
     tokenBalance: hasPositiveDecimal(historical.tokenBalance) ? historical.tokenBalance : existing.tokenBalance,
-    ...(historical as any).isSold ? { isSold: true } : {}
+    ...((historical as any).isSold ? { isSold: true } : {}),
+    ...((historical as any).isRedeemed ? { isRedeemed: true } : {})
   };
 }
 
@@ -1546,7 +1547,8 @@ function mergeCachedSettledPosition(current: TrackedPosition, cached: TrackedPos
     endsAt: current.endsAt ?? cached.endsAt,
     claimable: current.claimable || cached.claimable,
     tokenBalance: hasPositiveDecimal(current.tokenBalance) ? current.tokenBalance : cached.tokenBalance,
-    ...((current as any).isSold || (cached as any).isSold ? { isSold: true } : {})
+    ...((current as any).isSold || (cached as any).isSold ? { isSold: true } : {}),
+    ...((current as any).isRedeemed || (cached as any).isRedeemed ? { isRedeemed: true } : {})
   };
 }
 
@@ -2251,7 +2253,8 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
         currentPrice: hasVerifiedAmmPrice(currentPrice) ? currentPrice : undefined,
         hasVerifiedPricing: hasVerifiedAmmPrice(currentPrice),
         endsAt: market.endsAt,
-        isSold: bucket.hadSell
+        isSold: bucket.hadSell,
+        isRedeemed: bucket.hadRedeem
       });
     }
   }
@@ -2657,7 +2660,8 @@ function buildHistoricalSettledPositions(
         tokenBalance: historyTokenBalance,
         currentPrice,
         endsAt: market.endsAt,
-        isSold
+        isSold,
+        isRedeemed
       });
     }
   }

@@ -4,7 +4,16 @@ export function shouldPreferWalletSendCalls(connectorId?: string | null) {
 
 export function shouldUseDirectTransactionSubmission(
   totalCalls: number,
-  connectorId?: string | null
+  connectorId?: string | null,
+  action?: "buy" | "sell" | "redeem"
 ) {
-  return totalCalls === 1 && !shouldPreferWalletSendCalls(connectorId);
+  if (totalCalls !== 1) {
+    return false;
+  }
+
+  if (action === "redeem") {
+    return true;
+  }
+
+  return !shouldPreferWalletSendCalls(connectorId);
 }

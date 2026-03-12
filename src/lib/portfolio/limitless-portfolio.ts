@@ -27,6 +27,8 @@ export type TrackedPosition = {
   conditionalTokensContract?: `0x${string}`;
   /** Internal UI hint for historical positions closed via sell rather than resolution/redeem. */
   isSold?: boolean;
+  /** Internal UI hint for settled positions that have already been redeemed on-chain. */
+  isRedeemed?: boolean;
 };
 
 export type PortfolioPositionsSnapshot = {

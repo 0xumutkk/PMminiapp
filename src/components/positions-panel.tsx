@@ -1,5 +1,6 @@
 "use client";
 
+import { classifyClosedPositionState } from "@/lib/portfolio/closed-position-state";
 import type { PortfolioPositionsSnapshot } from "@/lib/portfolio/limitless-portfolio";
 import { filterVisibleActivePositions } from "@/lib/portfolio/visible-active-positions";
 import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
@@ -274,9 +275,10 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
         )}
         {closedPositions.length > 0 ? (
           closedPositions.map((position) => {
-            const isRedeemed = Number(position.currentPrice) > 0 && Number(position.tokenBalance) === 0 && position.status === "settled" && !(position as any).isSold;
-            const isSold = (position as any).isSold;
-            const isLost = !isRedeemed && !isSold && Number(position.currentPrice) === 0;
+            const closedState = classifyClosedPositionState(position);
+            const isRedeemed = closedState === "redeemed";
+            const isSold = closedState === "sold";
+            const isLost = closedState === "lost";
 
             const badgeColor = isRedeemed ? '#0bd52d' : isSold ? '#fc0' : '#ff3b6b';
             const badgeBg = isRedeemed ? 'rgba(11, 213, 45, 0.15)' : isSold ? 'rgba(255, 204, 0, 0.15)' : 'rgba(255, 59, 107, 0.15)';

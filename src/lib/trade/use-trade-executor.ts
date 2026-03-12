@@ -161,7 +161,8 @@ function applyConfirmedTradeToSnapshot(
       claimable: false,
       tokenBalance: "0",
       realizedPnlUsdc: formatPortfolioAmount(proceeds - cost),
-      currentPrice: typeof position.currentPrice === "number" ? position.currentPrice : 1
+      currentPrice: typeof position.currentPrice === "number" ? position.currentPrice : 1,
+      isRedeemed: true
     };
   });
 
@@ -404,7 +405,7 @@ export function useTradeExecutor() {
         setState((current) => ({ ...current, status: "awaiting_signature", error: null }));
 
         try {
-          if (shouldUseDirectTransactionSubmission(totalCalls, connector?.id)) {
+          if (shouldUseDirectTransactionSubmission(totalCalls, connector?.id, params.action)) {
             const [call] = calls;
             const hash = await sendTransactionAsync({
               account: address,

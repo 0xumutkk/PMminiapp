@@ -33,6 +33,13 @@ type TestHelpers = {
   sortSnapshotByStoredRecency: (
     snapshot: PortfolioPositionsSnapshot
   ) => PortfolioPositionsSnapshot;
+  hasRenderableOnchainPositions: (
+    snapshot: PortfolioPositionsSnapshot | null | undefined
+  ) => boolean;
+  collectOnchainDiscoveryAddresses: (
+    historyAddresses?: string[],
+    ...snapshots: Array<PortfolioPositionsSnapshot | null | undefined>
+  ) => string[];
 };
 
 let testHelpers: TestHelpers;
@@ -250,4 +257,69 @@ test("sortSnapshotByStoredRecency orders history by latest activity before marke
     result.settled.map((item) => item.id),
     ["newer-trade", "older-trade"]
   );
+});
+
+test("hasRenderableOnchainPositions treats claimable-only settled snapshots as renderable", () => {
+  const claimableSnapshot = buildSnapshot([
+    buildSettledPosition({
+      id: `${MARKET_ID}:yes`,
+      claimable: true,
+      marketValueUsdc: "1.25",
+      tokenBalance: "1.25"
+    })
+  ]);
+
+  assert.equal(testHelpers.hasRenderableOnchainPositions(claimableSnapshot), true);
+  assert.equal(testHelpers.hasRenderableOnchainPositions(buildSnapshot([])), false);
+  assert.equal(testHelpers.hasRenderableOnchainPositions(null), false);
+});
+
+test("collectOnchainDiscoveryAddresses includes address-backed markets from cached and supplemental snapshots", () => {
+  const historyAddress = "0x1111111111111111111111111111111111111111";
+  const cachedSnapshot: PortfolioPositionsSnapshot = {
+    ...buildSnapshot([]),
+    active: [
+      {
+        ...buildSettledPosition({
+          id: `${MARKET_ID}:no`,
+          marketId: "0x2222222222222222222222222222222222222222",
+          marketSlug: "cached-active",
+          status: "active",
+          claimable: false,
+          tokenBalance: "1",
+          marketValueUsdc: "0.5"
+        }),
+        side: "no",
+        unrealizedPnlUsdc: "0",
+        realizedPnlUsdc: "0"
+      }
+    ],
+    settled: [
+      buildSettledPosition({
+        id: `${MARKET_ID}:yes`,
+        marketId: "not-an-address",
+        marketSlug: "non-address-market"
+      })
+    ]
+  };
+  const supplementalSnapshot: PortfolioPositionsSnapshot = {
+    ...buildSnapshot([
+      buildSettledPosition({
+        id: `${MARKET_ID}:yes`,
+        marketId: "0x3333333333333333333333333333333333333333"
+      })
+    ])
+  };
+
+  const result = testHelpers.collectOnchainDiscoveryAddresses(
+    [historyAddress],
+    cachedSnapshot,
+    supplementalSnapshot
+  );
+
+  assert.deepEqual(result, [
+    historyAddress,
+    "0x2222222222222222222222222222222222222222",
+    "0x3333333333333333333333333333333333333333"
+  ]);
 });

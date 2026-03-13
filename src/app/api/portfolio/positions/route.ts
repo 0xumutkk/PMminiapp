@@ -3,6 +3,11 @@ import {
   type PortfolioPositionsSnapshot,
   type TrackedPosition
 } from "@/lib/portfolio/limitless-portfolio";
+import {
+  appendCachedDiscoveryAddresses,
+  extractDiscoveryAddressesFromSnapshot,
+  readCachedDiscoveryAddresses
+} from "@/lib/portfolio/discovery-cache";
 import { MIN_VISIBLE_ACTIVE_SHARES } from "@/lib/portfolio/visible-active-positions";
 import {
   fetchOnchainAmmPositions,
@@ -17,9 +22,13 @@ import * as fs from "node:fs";
 
 export const runtime = "nodejs";
 const ACTIVE_MARKET_PAGE_LIMIT = 6;
-const ONCHAIN_ENRICH_TIMEOUT_MS = 20_000;
-const LIGHT_ONCHAIN_ENRICH_TIMEOUT_MS = 12_000;
-const HISTORY_SUMMARY_TIMEOUT_MS = 8_000;
+const POSITIONS_REQUEST_BUDGET_MS = 10_000;
+const PUBLIC_PORTFOLIO_TIMEOUT_MS = 3_500;
+const BLOCKSCOUT_HISTORY_SNAPSHOT_TIMEOUT_MS = 2_500;
+const AMM_MARKET_DISCOVERY_TIMEOUT_MS = 2_500;
+const ONCHAIN_ENRICH_TIMEOUT_MS = 4_000;
+const LIGHT_ONCHAIN_ENRICH_TIMEOUT_MS = 3_500;
+const HISTORY_SUMMARY_TIMEOUT_MS = 2_500;
 const RECENT_HISTORY_RPC_FALLBACK_TIMEOUT_MS = 3_500;
 const HISTORY_SUMMARY_RPC_FALLBACK_TIMEOUT_MS = 2_500;
 const QUICK_HISTORY_RPC_META_LIMIT = 40;
@@ -1065,6 +1074,24 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
     }),
     timeoutPromise
   ]);
+}
+
+function getRemainingRequestBudgetMs(deadlineMs: number, maxStepMs: number) {
+  return Math.max(0, Math.min(maxStepMs, deadlineMs - Date.now()));
+}
+
+async function withRequestBudget<T>(
+  deadlineMs: number,
+  maxStepMs: number,
+  label: string,
+  work: () => Promise<T>
+) {
+  const timeoutMs = getRemainingRequestBudgetMs(deadlineMs, maxStepMs);
+  if (timeoutMs <= 0) {
+    throw new Error(`${label} skipped: request budget exhausted`);
+  }
+
+  return withTimeout(work(), timeoutMs, label);
 }
 
 async function fetchAmmMarketsForOnchain(
@@ -2538,6 +2565,46 @@ function recomputeTotals(
   };
 }
 
+function hasRenderableOnchainPositions(
+  snapshot: PortfolioPositionsSnapshot | null | undefined
+) {
+  if (!snapshot) {
+    return false;
+  }
+
+  return snapshot.active.length > 0 || snapshot.settled.length > 0;
+}
+
+function collectOnchainDiscoveryAddresses(
+  historyAddresses: string[] = [],
+  ...snapshots: Array<PortfolioPositionsSnapshot | null | undefined>
+) {
+  const addresses = new Set<string>();
+
+  const register = (value: string | undefined) => {
+    const trimmed = value?.trim();
+    if (!trimmed || !isAddress(trimmed)) {
+      return;
+    }
+
+    addresses.add(trimmed.toLowerCase());
+  };
+
+  historyAddresses.forEach(register);
+
+  for (const snapshot of snapshots) {
+    if (!snapshot) {
+      continue;
+    }
+
+    for (const position of [...snapshot.active, ...snapshot.settled]) {
+      register(position.marketId);
+    }
+  }
+
+  return Array.from(addresses);
+}
+
 function createPortfolioSnapshot(
   account: `0x${string}`,
   active: TrackedPosition[] = [],
@@ -3244,6 +3311,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const account = url.searchParams.get("account")?.trim() ?? "";
   const forceFresh = url.searchParams.get("fresh") === "1";
+  const criticalOnly = url.searchParams.get("critical") === "1";
 
   if (!isAddress(account)) {
     return Response.json(
@@ -3260,9 +3328,10 @@ export async function GET(request: Request) {
   }
 
   const cachedSnapshot = await readCachedPositionsSnapshot(account, snapshotCacheClient);
+  const cachedDiscoveryAddresses = await readCachedDiscoveryAddresses(account, snapshotCacheClient);
   const cachedSnapshotAgeMs = getSnapshotAgeMs(cachedSnapshot);
 
-  if (!forceFresh && cachedSnapshot && cachedSnapshotAgeMs <= STALE_SNAPSHOT_MAX_AGE_MS) {
+  if (!criticalOnly && !forceFresh && cachedSnapshot && cachedSnapshotAgeMs <= STALE_SNAPSHOT_MAX_AGE_MS) {
     headers.set(
       "X-Positions-Cache",
       cachedSnapshotAgeMs <= FAST_SNAPSHOT_MAX_AGE_MS ? "fast-hit" : "stale-hit"
@@ -3274,13 +3343,40 @@ export async function GET(request: Request) {
     const stabilizedSnapshot = sortSnapshotByStoredRecency(
       stabilizeSnapshotWithCache(snapshot, cachedSnapshot)
     );
-    if (shouldRefreshSnapshotCache(snapshot, cachedSnapshot)) {
+    await appendCachedDiscoveryAddresses(
+      account,
+      extractDiscoveryAddressesFromSnapshot(stabilizedSnapshot),
+      snapshotCacheClient
+    );
+    const snapshotSource = headers.get("X-Positions-Source");
+    const shouldWriteCache = snapshotSource !== "onchain-light";
+    if (shouldWriteCache && shouldRefreshSnapshotCache(snapshot, cachedSnapshot)) {
       await writeCachedPositionsSnapshot(account, stabilizedSnapshot, snapshotCacheClient);
     }
     return Response.json(stabilizedSnapshot, { headers });
   };
 
+  const respondWithCriticalSnapshot = async (snapshot: PortfolioPositionsSnapshot) => {
+    const preservedHistory = cachedSnapshot?.settled.filter((position) => !position.claimable) ?? [];
+    const mergedSnapshot = sortSnapshotByStoredRecency(
+      mergeHistoricalSettledPositions(snapshot, account as `0x${string}`, preservedHistory)
+    );
+
+    await appendCachedDiscoveryAddresses(
+      account,
+      extractDiscoveryAddressesFromSnapshot(mergedSnapshot),
+      snapshotCacheClient
+    );
+
+    if (shouldRefreshSnapshotCache(mergedSnapshot, cachedSnapshot)) {
+      await writeCachedPositionsSnapshot(account, mergedSnapshot, snapshotCacheClient);
+    }
+
+    return Response.json(mergedSnapshot, { headers });
+  };
+
   try {
+    const requestDeadlineMs = Date.now() + POSITIONS_REQUEST_BUDGET_MS;
     const authHeaders: Record<string, string> = {};
     const auth = request.headers.get("Authorization");
     const deviceId = request.headers.get("limitless-device-id");
@@ -3292,11 +3388,15 @@ export async function GET(request: Request) {
     // the initial profile render, so we should not block on transfer-history
     // reconstruction unless the caller explicitly asked for a fresh deep sync or
     // the public snapshot is empty/degraded.
-    const publicPortfolioPromise = fetchPublicPortfolioPositions(account, authHeaders).catch(err => {
+    const rawPublicPortfolio = await withRequestBudget(
+      requestDeadlineMs,
+      PUBLIC_PORTFOLIO_TIMEOUT_MS,
+      "Public portfolio fetch",
+      () => fetchPublicPortfolioPositions(account, authHeaders)
+    ).catch(err => {
       console.warn(`[Positions API] Failed to fetch public portfolio for cost basis:`, err);
       return null;
     });
-    const rawPublicPortfolio = await publicPortfolioPromise;
     const hasPublicPositions =
       rawPublicPortfolio !== null &&
       (rawPublicPortfolio.active.length > 0 || rawPublicPortfolio.settled.length > 0);
@@ -3307,58 +3407,148 @@ export async function GET(request: Request) {
     }
 
     const shouldAttemptBlockscoutHistoryBackfill =
+      !criticalOnly &&
       !hasPublicPositions ||
-      (forceFresh && rawPublicPortfolio !== null && rawPublicPortfolio.settled.length === 0);
+      (!criticalOnly && forceFresh && rawPublicPortfolio !== null && rawPublicPortfolio.settled.length === 0);
 
     let blockscoutHistorySnapshot: PortfolioPositionsSnapshot | null = null;
     if (shouldAttemptBlockscoutHistoryBackfill) {
       try {
-        blockscoutHistorySnapshot = await fetchReconciledBlockscoutHistorySnapshot(account as `0x${string}`);
-        if (!hasPublicPositions && blockscoutHistorySnapshot) {
-          headers.set("X-Positions-Source", "blockscout-history");
-          return respondWithSnapshot(blockscoutHistorySnapshot);
-        }
+        blockscoutHistorySnapshot = await withRequestBudget(
+          requestDeadlineMs,
+          BLOCKSCOUT_HISTORY_SNAPSHOT_TIMEOUT_MS,
+          "Blockscout history snapshot",
+          () => fetchReconciledBlockscoutHistorySnapshot(account as `0x${string}`)
+        );
       } catch (error) {
         console.warn("[Positions API] Blockscout history snapshot failed:", error);
       }
     }
 
-    if (!forceFresh && !hasPublicPositions) {
+    let lightOnchainSnapshot: PortfolioPositionsSnapshot | null = null;
+    if (!hasPublicPositions) {
       try {
         const lightSnapshot = await withTimeout(
-          (async () => {
-            const lightMarkets = await fetchAmmMarketsForOnchain([], true);
-            return fetchOnchainAmmPositions(account as `0x${string}`, lightMarkets, {});
-          })(),
+          withRequestBudget(
+            requestDeadlineMs,
+            LIGHT_ONCHAIN_ENRICH_TIMEOUT_MS,
+            "Light on-chain portfolio scan",
+            async () => {
+              const lightDiscoveryAddresses = collectOnchainDiscoveryAddresses(
+                cachedDiscoveryAddresses,
+                cachedSnapshot,
+                blockscoutHistorySnapshot
+              );
+              const lightMarkets = await fetchAmmMarketsForOnchain(
+                lightDiscoveryAddresses,
+                lightDiscoveryAddresses.length === 0
+              );
+              return fetchOnchainAmmPositions(account as `0x${string}`, lightMarkets, {});
+            }
+          ),
           LIGHT_ONCHAIN_ENRICH_TIMEOUT_MS,
           "Light on-chain portfolio scan"
         );
 
-        if (lightSnapshot.active.length > 0) {
-          headers.set("X-Positions-Source", "onchain-light");
-          return respondWithSnapshot(lightSnapshot);
+        const stabilizedLightSnapshot = mergeHistoricalSettledPositions(
+          lightSnapshot,
+          account as `0x${string}`,
+          blockscoutHistorySnapshot?.settled ?? []
+        );
+
+        if (hasRenderableOnchainPositions(stabilizedLightSnapshot)) {
+          lightOnchainSnapshot = stabilizedLightSnapshot;
         }
       } catch (error) {
         console.warn("[Positions API] Light on-chain scan failed:", error);
       }
     }
 
+    if (criticalOnly) {
+      const criticalDiscoveryAddresses = collectOnchainDiscoveryAddresses(
+        cachedDiscoveryAddresses,
+        cachedSnapshot,
+        lightOnchainSnapshot,
+        blockscoutHistorySnapshot
+      );
+      const criticalIncludeCatalog = criticalDiscoveryAddresses.length === 0;
+      const criticalMarkets = await withRequestBudget(
+        requestDeadlineMs,
+        AMM_MARKET_DISCOVERY_TIMEOUT_MS,
+        "Critical AMM market discovery",
+        () => fetchAmmMarketsForOnchain(criticalDiscoveryAddresses, criticalIncludeCatalog)
+      ).catch((error) => {
+        console.warn("[Positions API] Critical AMM market discovery failed:", error);
+        return [] as AmmMarketRef[];
+      });
+
+      let criticalOnchainSnapshot = lightOnchainSnapshot;
+      if (criticalMarkets.length > 0) {
+        try {
+          criticalOnchainSnapshot = await withRequestBudget(
+            requestDeadlineMs,
+            ONCHAIN_ENRICH_TIMEOUT_MS,
+            "Critical on-chain portfolio enrichment",
+            () => fetchOnchainAmmPositions(account as `0x${string}`, criticalMarkets, {})
+          );
+        } catch (error) {
+          console.warn("[Positions API] Critical on-chain enrichment failed:", error);
+        }
+      }
+
+      const criticalBaseSnapshot = criticalOnchainSnapshot
+        ? mergePortfolioSnapshots(
+            account as `0x${string}`,
+            enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, criticalMarkets),
+            criticalOnchainSnapshot
+          )
+        : (enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, criticalMarkets) ??
+          createPortfolioSnapshot(account as `0x${string}`));
+
+      const criticalSnapshot = reconcileClaimableSettledWithOnchain(
+        criticalBaseSnapshot,
+        criticalOnchainSnapshot ?? createPortfolioSnapshot(account as `0x${string}`),
+        criticalMarkets
+      );
+
+      headers.set(
+        "X-Positions-Source",
+        rawPublicPortfolio ? "critical-public+onchain" : "critical-onchain"
+      );
+      return respondWithCriticalSnapshot(criticalSnapshot);
+    }
+
     // 2. Only fall back to the heavier history + on-chain reconstruction when
     // the public snapshot is empty or the client explicitly requested a fresh
     // deep sync.
-    const rawHistorySummary = await withTimeout(
-      fetchTransferHistorySummary(account),
+    const rawHistorySummary = await withRequestBudget(
+      requestDeadlineMs,
       HISTORY_SUMMARY_TIMEOUT_MS,
-      "Transfer history summary"
+      "Transfer history summary",
+      () => fetchTransferHistorySummary(account)
     ).catch((error) => {
       console.warn("[Positions API] Transfer history summary failed:", error);
       return emptyTransferHistorySummary();
     });
 
-    const shouldFetchOnchain = !hasPublicPositions || rawHistorySummary.fpmmAddresses.length > 0;
-    const shouldIncludeCatalog = !hasPublicPositions && rawHistorySummary.fpmmAddresses.length === 0;
+    const discoveryAddresses = collectOnchainDiscoveryAddresses(
+      rawHistorySummary.fpmmAddresses,
+      cachedSnapshot,
+      blockscoutHistorySnapshot,
+      lightOnchainSnapshot
+    );
+    const shouldFetchOnchain = !hasPublicPositions || discoveryAddresses.length > 0;
+    const shouldIncludeCatalog = !hasPublicPositions && discoveryAddresses.length === 0;
     const ammMarkets = shouldFetchOnchain
-      ? await fetchAmmMarketsForOnchain(rawHistorySummary.fpmmAddresses, shouldIncludeCatalog)
+      ? await withRequestBudget(
+          requestDeadlineMs,
+          AMM_MARKET_DISCOVERY_TIMEOUT_MS,
+          "AMM market discovery",
+          () => fetchAmmMarketsForOnchain(discoveryAddresses, shouldIncludeCatalog)
+        ).catch((error) => {
+          console.warn("[Positions API] AMM market discovery failed:", error);
+          return [] as AmmMarketRef[];
+        })
       : [];
     const historySummary = augmentHistorySummaryWithTokenCostBasis(rawHistorySummary, ammMarkets);
     const publicPortfolio = enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, ammMarkets);
@@ -3409,6 +3599,7 @@ export async function GET(request: Request) {
     console.log(`[Positions API] Cost basis sample:`, JSON.stringify(Object.entries(costBasisMap).slice(0, 5)));
 
     if (!shouldFetchOnchain) {
+      headers.set("X-Positions-Source", publicPortfolio ? "public+history" : "history-merged");
       const snapshot = sortSnapshotActivePositions(
         mergeHistoricalSettledPositions(publicPortfolio, account as `0x${string}`, historicalSettled),
         historySummary,
@@ -3422,18 +3613,24 @@ export async function GET(request: Request) {
       // 4. Read ERC-1155 balances directly from Base, passing in the cost map.
       // This layer is best-effort; if Base RPC stalls we still want to return the
       // public Limitless portfolio instead of leaving the profile page empty.
-      onchainSnapshot = await withTimeout(
-        fetchOnchainAmmPositions(
+      onchainSnapshot = await withRequestBudget(
+        requestDeadlineMs,
+        ONCHAIN_ENRICH_TIMEOUT_MS,
+        "On-chain portfolio enrichment",
+        () => fetchOnchainAmmPositions(
           account as `0x${string}`,
           ammMarkets,
           costBasisMap
-        ),
-        ONCHAIN_ENRICH_TIMEOUT_MS,
-        "On-chain portfolio enrichment"
+        )
       );
     } catch (error) {
       console.warn("[Positions API] On-chain enrichment failed:", error);
+      if (lightOnchainSnapshot && hasRenderableOnchainPositions(lightOnchainSnapshot)) {
+        headers.set("X-Positions-Source", "onchain-light");
+        return respondWithSnapshot(lightOnchainSnapshot);
+      }
       if (publicPortfolio) {
+        headers.set("X-Positions-Source", "public+history-fallback");
         const snapshot = sortSnapshotActivePositions(
           mergeHistoricalSettledPositions(publicPortfolio, account as `0x${string}`, historicalSettled),
           historySummary,
@@ -3441,6 +3638,7 @@ export async function GET(request: Request) {
         );
         return respondWithSnapshot(snapshot);
       }
+      headers.set("X-Positions-Source", "history-fallback");
       const fallbackSnapshot = sortSnapshotActivePositions(
         mergeHistoricalSettledPositions(null, account as `0x${string}`, historicalSettled),
         historySummary,
@@ -3476,6 +3674,7 @@ export async function GET(request: Request) {
 
     console.log(`[Positions API] Returning ${finalSnapshot?.active.length ?? 0} active and ${finalSnapshot?.settled.length ?? 0} settled positions for ${account}`);
 
+    headers.set("X-Positions-Source", publicPortfolio ? "public+onchain" : "onchain-reconstructed");
     return respondWithSnapshot(finalSnapshot);
   } catch (error) {
     if (cachedSnapshot) {
@@ -3498,6 +3697,8 @@ declare global {
         combineHistoricalSettledSources: typeof combineHistoricalSettledSources;
         reconcileClaimableSettledWithOnchain: typeof reconcileClaimableSettledWithOnchain;
         sortSnapshotByStoredRecency: typeof sortSnapshotByStoredRecency;
+        hasRenderableOnchainPositions: typeof hasRenderableOnchainPositions;
+        collectOnchainDiscoveryAddresses: typeof collectOnchainDiscoveryAddresses;
       }
     | undefined;
 }
@@ -3508,6 +3709,8 @@ if (process.env.NODE_ENV === "test") {
     mergeHistoricalSettledPositions,
     combineHistoricalSettledSources,
     reconcileClaimableSettledWithOnchain,
-    sortSnapshotByStoredRecency
+    sortSnapshotByStoredRecency,
+    hasRenderableOnchainPositions,
+    collectOnchainDiscoveryAddresses
   };
 }

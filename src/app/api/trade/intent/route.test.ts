@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { POST } from "@/app/api/trade/intent/route";
+import { readCachedDiscoveryAddresses } from "@/lib/portfolio/discovery-cache";
 
 const TEST_WALLET = "0x1111111111111111111111111111111111111111";
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -47,6 +48,8 @@ beforeEach(() => {
   process.env.TRADE_MAX_USDC = "1000";
 
   (globalThis as { __apiRateLimitStore?: unknown }).__apiRateLimitStore = undefined;
+  (globalThis as { __pmMiniappPositionsDiscoveryCache?: unknown }).__pmMiniappPositionsDiscoveryCache =
+    undefined;
   (globalThis as { __marketIndexer_v2?: { start: () => Promise<void>; getSnapshot: () => Promise<null> } }).__marketIndexer_v2 =
     {
       start: async () => {},
@@ -100,6 +103,8 @@ afterEach(() => {
 
   (globalThis as { __marketIndexer_v2?: unknown }).__marketIndexer_v2 = undefined;
   (globalThis as { __apiRateLimitStore?: unknown }).__apiRateLimitStore = undefined;
+  (globalThis as { __pmMiniappPositionsDiscoveryCache?: unknown }).__pmMiniappPositionsDiscoveryCache =
+    undefined;
   globalThis.fetch = ORIGINAL_FETCH;
 });
 
@@ -163,6 +168,52 @@ test("sell action does not fall back to an arbitrary position with the same side
 
   assert.equal(response.status, 409);
   assert.equal(body.error, "No active position found for this market/side.");
+});
+
+test("buy action persists the market FPMM in the discovery cache", { concurrency: false }, async () => {
+  const fpmmAddress = "0x2222222222222222222222222222222222222222";
+
+  (globalThis as {
+    __marketIndexer_v2?: { start: () => Promise<void>; getSnapshot: () => Promise<unknown> };
+  }).__marketIndexer_v2 = {
+    start: async () => {},
+    getSnapshot: async () => ({
+      updatedAt: "2026-03-13T12:00:00.000Z",
+      markets: [
+        {
+          id: "market-claimable",
+          slug: "market-claimable",
+          title: "Claimable later market",
+          yesPrice: 0.62,
+          noPrice: 0.38,
+          status: "open",
+          source: "limitless",
+          tradeVenue: {
+            venueExchange: fpmmAddress,
+            marketRef: "market-claimable"
+          }
+        }
+      ]
+    })
+  };
+
+  const request = buildRequest({
+    action: "buy",
+    marketId: "market-claimable",
+    side: "yes",
+    amountUsdc: "5",
+    expectedPrice: 0.62,
+    walletAddress: TEST_WALLET
+  });
+
+  const response = await POST(request);
+  const body = (await response.json()) as { error?: string };
+
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.deepEqual(
+    await readCachedDiscoveryAddresses(TEST_WALLET, null),
+    [fpmmAddress.toLowerCase()]
+  );
 });
 
 test("redeem action resolves conditionId from the market endpoint and builds CT calldata", { concurrency: false }, async () => {

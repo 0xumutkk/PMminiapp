@@ -33,6 +33,19 @@ function resolveMetadataBase(raw: string | undefined) {
   }
 }
 
+function resolveAssetUrl(raw: string | undefined, fallbackPath: string) {
+  const value = raw?.trim();
+  if (!value) {
+    return new URL(fallbackPath, metadataBase).toString();
+  }
+
+  try {
+    return new URL(value).toString();
+  } catch {
+    return new URL(value.startsWith("/") ? value : `/${value}`, metadataBase).toString();
+  }
+}
+
 const metadataBase = resolveMetadataBase(process.env.NEXT_PUBLIC_MINI_APP_URL);
 const appName = process.env.NEXT_PUBLIC_APP_NAME ?? "Swipen";
 const appDescription =
@@ -40,8 +53,27 @@ const appDescription =
 const ogTitle = process.env.NEXT_PUBLIC_OG_TITLE ?? appName;
 const ogDescription = process.env.NEXT_PUBLIC_OG_DESCRIPTION ?? appDescription;
 const baseAppId = process.env.NEXT_PUBLIC_BASE_APP_ID?.trim() || null;
+const buttonTitle = process.env.NEXT_PUBLIC_APP_BUTTON_TITLE?.trim() || "Open app";
 const iconUrl = "/icon.png";
 const ogImageUrl = "/og.png";
+const splashImageUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_SPLASH_IMAGE_URL, "/Splash.png");
+const miniAppImageUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_IMAGE_URL, "/miniapp-preview.png");
+const miniAppUrl = new URL("/", metadataBase).toString();
+const miniAppEmbed = JSON.stringify({
+  version: "1",
+  imageUrl: miniAppImageUrl,
+  aspectRatio: "3:2",
+  button: {
+    title: buttonTitle,
+    action: {
+      type: "launch_miniapp",
+      name: appName.slice(0, 32),
+      url: miniAppUrl,
+      splashImageUrl,
+      splashBackgroundColor: process.env.NEXT_PUBLIC_SPLASH_BG ?? "#0b1020"
+    }
+  }
+});
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -76,13 +108,21 @@ export const metadata: Metadata = {
     description: ogDescription,
     images: [ogImageUrl]
   },
-  other: baseAppId ? { "base:app_id": baseAppId } : undefined
+  other: {
+    "fc:frame": miniAppEmbed,
+    "fc:miniapp": miniAppEmbed,
+    ...(baseAppId ? { "base:app_id": baseAppId } : {})
+  }
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <head>{baseAppId ? <meta name="base:app_id" content={baseAppId} /> : null}</head>
+      <head>
+        <meta name="fc:frame" content={miniAppEmbed} />
+        <meta name="fc:miniapp" content={miniAppEmbed} />
+        {baseAppId ? <meta name="base:app_id" content={baseAppId} /> : null}
+      </head>
       <body>
         <Script id="miniapp-runtime-guards" strategy="beforeInteractive">
           {`

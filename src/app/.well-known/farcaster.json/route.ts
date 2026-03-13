@@ -11,6 +11,8 @@ type MiniAppFrameManifest = {
   name: string;
   homeUrl: string;
   iconUrl: string;
+  imageUrl?: string;
+  buttonTitle?: string;
   splashImageUrl: string;
   splashBackgroundColor: string;
   requiredCapabilities?: string[];
@@ -281,6 +283,11 @@ export async function GET(request: Request) {
     `${baseUrl}/Splash.png`,
     requestHost
   );
+  const imageUrl = resolveAssetUrl(
+    process.env.NEXT_PUBLIC_IMAGE_URL,
+    `${baseUrl}/miniapp-preview.png`,
+    requestHost
+  );
   const ogImageUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_OG_IMAGE_URL, `${baseUrl}/og.png`, requestHost);
   const heroImageUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_HERO_IMAGE_URL, `${baseUrl}/og.png`, requestHost);
   const requiredCapabilities = withDefaultList(
@@ -297,6 +304,8 @@ export async function GET(request: Request) {
     name: (process.env.NEXT_PUBLIC_APP_NAME ?? "Swipen").slice(0, 30),
     homeUrl: baseUrl,
     iconUrl,
+    imageUrl,
+    buttonTitle: toOptionalShortText(process.env.NEXT_PUBLIC_APP_BUTTON_TITLE, 32) ?? "Open app",
     splashImageUrl,
     splashBackgroundColor: process.env.NEXT_PUBLIC_SPLASH_BG ?? "#0b1020",
     requiredCapabilities,

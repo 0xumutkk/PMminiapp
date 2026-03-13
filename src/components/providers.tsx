@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider } from "wagmi";
 import { wagmiConfig } from "@/lib/wagmi";
 import { MiniAppAuthProvider } from "@/components/miniapp-auth-provider";
+import { MiniAppReady } from "@/components/miniapp-ready";
 import { ProfileDataPrefetcher } from "@/components/profile-data-prefetcher";
 
 const queryClient = new QueryClient({
@@ -22,6 +23,7 @@ export function AppProviders({ children }: PropsWithChildren) {
   return (
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
+        <MiniAppReady />
         <MiniAppAuthProvider>
           <ProfileDataPrefetcher />
           {children}

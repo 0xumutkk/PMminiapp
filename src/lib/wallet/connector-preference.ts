@@ -1,5 +1,6 @@
 type ConnectorLike = {
   id: string;
+  type?: string;
 };
 
 type WalletRuntimeEnvironment = {
@@ -44,6 +45,44 @@ export function getWalletRuntimeEnvironment(): WalletRuntimeEnvironment {
   };
 }
 
+function isBaseAccountConnector(connector: ConnectorLike) {
+  return connector.id === "baseAccount" || connector.type === "baseAccount";
+}
+
+function isInjectedConnector(connector: ConnectorLike) {
+  return connector.id === "injected" || connector.type === "injected";
+}
+
+function resolveInjectedConnector<T extends ConnectorLike>(
+  connectors: readonly T[],
+  environment: WalletRuntimeEnvironment
+) {
+  const injectedConnectors = connectors.filter(isInjectedConnector);
+  if (injectedConnectors.length === 0) {
+    return undefined;
+  }
+
+  const targetedInjectedConnector = injectedConnectors.find((connector) => connector.id !== "injected");
+  if (environment.hasInjectedProvider) {
+    return injectedConnectors.find((connector) => connector.id === "injected") ?? targetedInjectedConnector;
+  }
+
+  return targetedInjectedConnector;
+}
+
+export function getWalletConnectUnavailableReason<T extends ConnectorLike>(
+  connectors: readonly T[],
+  environment: WalletRuntimeEnvironment = getWalletRuntimeEnvironment()
+) {
+  if (!environment.isFramed) {
+    return null;
+  }
+
+  return resolveInjectedConnector(connectors, environment)
+    ? null
+    : "No injected wallet is available in this host. Open the app in a wallet-enabled browser or supported mini app.";
+}
+
 export function isCrossOriginFrameConnectError(error: unknown) {
   const message = errorMessage(error).toLowerCase();
   if (!message) {
@@ -63,12 +102,19 @@ export function isInjectedNotFoundError(error: unknown) {
   return message.includes("provider not found") || message.includes("no provider");
 }
 
-export function formatWalletConnectError(error: unknown) {
+export function formatWalletConnectError(
+  error: unknown,
+  environment: WalletRuntimeEnvironment = getWalletRuntimeEnvironment()
+) {
   if (isCrossOriginFrameConnectError(error)) {
     return "This host blocks Base Account in an iframe. Retry with your injected wallet.";
   }
 
   if (isInjectedNotFoundError(error)) {
+    if (environment.isFramed) {
+      return "No injected wallet is available in this host. Open the app in a wallet-enabled browser or supported mini app.";
+    }
+
     return "No wallet found. Install Coinbase Wallet or MetaMask, or try Base Account.";
   }
 
@@ -80,15 +126,15 @@ export function resolvePreferredConnector<T extends ConnectorLike>(
   connectors: readonly T[],
   environment: WalletRuntimeEnvironment = getWalletRuntimeEnvironment()
 ) {
-  const baseAccount = connectors.find((connector) => connector.id === "baseAccount");
-  const injected = connectors.find((connector) => connector.id === "injected");
+  const baseAccount = connectors.find(isBaseAccountConnector);
+  const injected = resolveInjectedConnector(connectors, environment);
 
-  if (environment.hasInjectedProvider && injected) {
+  if (injected) {
     return injected;
   }
 
-  if (environment.isFramed && injected) {
-    return injected;
+  if (environment.isFramed) {
+    return undefined;
   }
 
   return baseAccount ?? injected ?? connectors[0];
@@ -100,21 +146,23 @@ export function resolveFallbackConnector<T extends ConnectorLike>(
   error: unknown,
   environment: WalletRuntimeEnvironment = getWalletRuntimeEnvironment()
 ) {
-  if (attemptedConnectorId === "baseAccount") {
-    if (!environment.hasInjectedProvider && !environment.isFramed) {
-      return undefined;
-    }
+  const attemptedConnector = connectors.find((connector) => connector.id === attemptedConnectorId);
 
+  if (attemptedConnector && isBaseAccountConnector(attemptedConnector)) {
     if (!isCrossOriginFrameConnectError(error)) {
       return undefined;
     }
 
-    return connectors.find((connector) => connector.id === "injected");
+    return resolveInjectedConnector(connectors, environment);
   }
 
-  if (attemptedConnectorId === "injected") {
+  if (attemptedConnector && isInjectedConnector(attemptedConnector)) {
+    if (environment.isFramed) {
+      return undefined;
+    }
+
     if (isInjectedNotFoundError(error)) {
-      return connectors.find((connector) => connector.id === "baseAccount");
+      return connectors.find(isBaseAccountConnector);
     }
   }
 

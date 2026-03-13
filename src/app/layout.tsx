@@ -181,10 +181,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   message.indexOf("Access-Control-Allow-Origin") !== -1
                 );
               }
-              function stopProviderRequest(event) {
-                if (!event) return;
-                event.stopImmediatePropagation();
-              }
               if (typeof window !== "undefined") {
                 var originalFetch = window.fetch.bind(window);
                 window.fetch = function (input, init) {
@@ -225,7 +221,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   };
                 }
 
-                window.addEventListener("eip6963:requestProvider", stopProviderRequest, true);
                 window.addEventListener("unhandledrejection", function (event) {
                   if (event && shouldIgnore(event.reason)) {
                     event.preventDefault();
@@ -248,9 +243,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     return originalSendBeacon(url, data);
                   };
                 }
-              }
-              if (typeof document !== "undefined") {
-                document.addEventListener("eip6963:requestProvider", stopProviderRequest, true);
               }
             })();
           `}

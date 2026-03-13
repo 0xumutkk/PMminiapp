@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import {
   formatWalletConnectError,
+  getWalletConnectUnavailableReason,
   resolveFallbackConnector,
   resolvePreferredConnector
 } from "@/lib/wallet/connector-preference";
@@ -30,6 +31,7 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
   const { disconnect } = useDisconnect();
   const { isAuthenticated, status: authStatus, signIn, signOut } = useMiniAppAuth();
   const selectedConnector = resolvePreferredConnector(connectors);
+  const unavailableConnectError = mounted ? getWalletConnectUnavailableReason(connectors) : null;
 
   useEffect(() => {
     setMounted(true);
@@ -50,13 +52,17 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
     }
   }, [isConnecting, connectionStatus, mounted, disconnect]);
 
-  const displayConnectError = localConnectError ?? (connectError ? formatWalletConnectError(connectError) : null);
+  const displayConnectError =
+    localConnectError ??
+    unavailableConnectError ??
+    (connectError ? formatWalletConnectError(connectError) : null);
 
   const handleConnect = async () => {
     console.log("[AppShell] Available connectors:", connectors.map(c => `${c.id} (${c.name})`));
     console.log("[AppShell] Attempting connect with:", selectedConnector?.id);
 
     if (!selectedConnector) {
+      setLocalConnectError(unavailableConnectError);
       return;
     }
 

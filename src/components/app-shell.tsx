@@ -1,6 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import {
+  formatWalletConnectError,
+  resolveFallbackConnector,
+  resolvePreferredConnector
+} from "@/lib/wallet/connector-preference";
 
 type AppShellProps = {
   title: string;
@@ -14,20 +19,14 @@ import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import { useRouter, usePathname } from "next/navigation";
 
-function resolvePreferredConnector(connectors: ReturnType<typeof useConnect>["connectors"]) {
-  const baseAccount = connectors.find((c) => c.id === "baseAccount");
-  const injected = connectors.find((c) => c.id === "injected");
-
-  return baseAccount ?? injected ?? connectors[0];
-}
-
 export function AppShell({ title, subtitle, children, scrollContent = false }: AppShellProps) {
   const router = useRouter();
   const pathname = usePathname();
   const [mounted, setMounted] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [localConnectError, setLocalConnectError] = useState<string | null>(null);
   const { address, isConnected, status: connectionStatus } = useAccount();
-  const { connect, connectors, isPending: isConnecting, error: connectError } = useConnect();
+  const { connectAsync, connectors, isPending: isConnecting, error: connectError } = useConnect();
   const { disconnect } = useDisconnect();
   const { isAuthenticated, status: authStatus, signIn, signOut } = useMiniAppAuth();
   const selectedConnector = resolvePreferredConnector(connectors);
@@ -51,12 +50,38 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
     }
   }, [isConnecting, connectionStatus, mounted, disconnect]);
 
-  const handleConnect = () => {
+  const displayConnectError = localConnectError ?? (connectError ? formatWalletConnectError(connectError) : null);
+
+  const handleConnect = async () => {
     console.log("[AppShell] Available connectors:", connectors.map(c => `${c.id} (${c.name})`));
     console.log("[AppShell] Attempting connect with:", selectedConnector?.id);
 
-    if (selectedConnector) {
-      connect({ connector: selectedConnector });
+    if (!selectedConnector) {
+      return;
+    }
+
+    setLocalConnectError(null);
+
+    try {
+      await connectAsync({ connector: selectedConnector });
+    } catch (error) {
+      const fallbackConnector = resolveFallbackConnector(
+        selectedConnector.id,
+        connectors,
+        error
+      );
+
+      if (fallbackConnector && fallbackConnector.id !== selectedConnector.id) {
+        try {
+          await connectAsync({ connector: fallbackConnector });
+          return;
+        } catch (fallbackError) {
+          setLocalConnectError(formatWalletConnectError(fallbackError));
+          return;
+        }
+      }
+
+      setLocalConnectError(formatWalletConnectError(error));
     }
   };
 
@@ -106,7 +131,7 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
             <div style={{ position: 'relative' }}>
               <button
                 className="segmented-control__item"
-                onClick={handleConnect}
+                onClick={() => void handleConnect()}
                 disabled={isAnyConnecting || !selectedConnector}
                 style={{
                   border: 'none',
@@ -116,7 +141,7 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
                   opacity: isAnyConnecting || !selectedConnector ? 0.6 : 1
                 }}
               >
-                {isAnyConnecting ? 'Connecting...' : (connectError ? 'Retry' : 'Connect')}
+                {isAnyConnecting ? 'Connecting...' : (displayConnectError ? 'Retry' : 'Connect')}
               </button>
               {isAnyConnecting && (
                 <button
@@ -136,9 +161,9 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
                   Cancel
                 </button>
               )}
-              {connectError && (
+              {displayConnectError && (
                 <div style={{ position: 'absolute', top: '100%', right: 0, color: '#ff3b6b', fontSize: '10px', marginTop: '4px', whiteSpace: 'nowrap' }}>
-                  {connectError.message.slice(0, 30)}
+                  {displayConnectError.slice(0, 54)}
                 </div>
               )}
             </div>

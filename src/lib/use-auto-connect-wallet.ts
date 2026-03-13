@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useAccount, useConnect } from "wagmi";
+import { resolvePreferredConnector } from "@/lib/wallet/connector-preference";
 
 export function useAutoConnectWallet() {
   const attemptedRef = useRef(false);
@@ -9,11 +10,13 @@ export function useAutoConnectWallet() {
   const { connect, connectors } = useConnect();
 
   useEffect(() => {
-    if (attemptedRef.current || isConnected || connectors.length === 0) {
+    const connector = resolvePreferredConnector(connectors);
+
+    if (attemptedRef.current || isConnected || !connector) {
       return;
     }
 
     attemptedRef.current = true;
-    connect({ connector: connectors[0] });
+    connect({ connector });
   }, [connect, connectors, isConnected]);
 }

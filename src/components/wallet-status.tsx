@@ -3,13 +3,10 @@
 import { useAccount, useChainId, useConnect, useDisconnect } from "wagmi";
 import { base } from "wagmi/chains";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
-
-function resolvePreferredConnector(connectors: ReturnType<typeof useConnect>["connectors"]) {
-  const baseAccount = connectors.find((c) => c.id === "baseAccount");
-  const injected = connectors.find((c) => c.id === "injected");
-
-  return baseAccount ?? injected ?? connectors[0];
-}
+import {
+  resolveFallbackConnector,
+  resolvePreferredConnector
+} from "@/lib/wallet/connector-preference";
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -19,9 +16,33 @@ export function WalletStatus() {
   const { address, isConnected } = useAccount();
   const { disconnect } = useDisconnect();
   const chainId = useChainId();
-  const { connect, connectors, isPending } = useConnect();
+  const { connectAsync, connectors, isPending } = useConnect();
   const { isAuthenticated, status: authStatus, signIn, signOut } = useMiniAppAuth();
   const defaultConnector = resolvePreferredConnector(connectors);
+
+  const handleConnect = async () => {
+    if (!defaultConnector) {
+      return;
+    }
+
+    try {
+      await connectAsync({ connector: defaultConnector });
+    } catch (error) {
+      const fallbackConnector = resolveFallbackConnector(
+        defaultConnector.id,
+        connectors,
+        error
+      );
+
+      if (fallbackConnector && fallbackConnector.id !== defaultConnector.id) {
+        try {
+          await connectAsync({ connector: fallbackConnector });
+        } catch {
+          // Keep the secondary status widget silent on connection failures.
+        }
+      }
+    }
+  };
 
   if (isPending) {
     return <p className="wallet-status">Connecting wallet...</p>;
@@ -31,7 +52,7 @@ export function WalletStatus() {
     return (
       <button
         className="wallet-connect-btn"
-        onClick={() => connect({ connector: defaultConnector })}
+        onClick={() => void handleConnect()}
         disabled={!defaultConnector}
         type="button"
       >

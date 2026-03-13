@@ -7,9 +7,7 @@ type MiniAppReadyWindow = Window & {
   __swipenMiniAppReadyPromise?: Promise<void>;
   __swipenMiniAppWalletBridgeComplete?: boolean;
   __swipenMiniAppWalletBridgePromise?: Promise<void>;
-  ethereum?: {
-    providers?: unknown[];
-  };
+  __swipenMiniAppEthereumProvider?: unknown;
 };
 
 async function ensureMiniAppWalletBridge() {
@@ -18,7 +16,7 @@ async function ensureMiniAppWalletBridge() {
   }
 
   const readyWindow = window as MiniAppReadyWindow;
-  if (readyWindow.__swipenMiniAppWalletBridgeComplete || readyWindow.ethereum) {
+  if (readyWindow.__swipenMiniAppWalletBridgeComplete || readyWindow.__swipenMiniAppEthereumProvider) {
     return;
   }
 
@@ -34,16 +32,16 @@ async function ensureMiniAppWalletBridge() {
     }
 
     const provider = await sdk.wallet.getEthereumProvider();
-    if (!provider || readyWindow.ethereum) {
+    if (!provider || readyWindow.__swipenMiniAppEthereumProvider) {
       return;
     }
 
-    readyWindow.ethereum = provider as MiniAppReadyWindow["ethereum"];
+    readyWindow.__swipenMiniAppEthereumProvider = provider;
     readyWindow.__swipenMiniAppWalletBridgeComplete = true;
     readyWindow.dispatchEvent(new Event("ethereum#initialized"));
     readyWindow.dispatchEvent(new Event("swipen:wallet-provider-ready"));
   })().finally(() => {
-    if (!readyWindow.__swipenMiniAppWalletBridgeComplete && !readyWindow.ethereum) {
+    if (!readyWindow.__swipenMiniAppWalletBridgeComplete && !readyWindow.__swipenMiniAppEthereumProvider) {
       readyWindow.__swipenMiniAppWalletBridgePromise = undefined;
     }
   });

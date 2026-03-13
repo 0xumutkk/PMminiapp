@@ -13,10 +13,26 @@ const CONNECTORS = [
   { id: "injected", name: "Injected" }
 ];
 
+function createEnvironment(overrides: Partial<{
+  hasInjectedProvider: boolean;
+  hasMiniAppProvider: boolean;
+  hasWindowEthereum: boolean;
+  isFramed: boolean;
+}> = {}) {
+  return {
+    hasInjectedProvider: false,
+    hasMiniAppProvider: false,
+    hasWindowEthereum: false,
+    isFramed: false,
+    ...overrides
+  };
+}
+
 test("resolvePreferredConnector prefers injected when an injected provider is available", () => {
   const connector = resolvePreferredConnector(CONNECTORS, {
+    ...createEnvironment(),
     hasInjectedProvider: true,
-    isFramed: false
+    hasWindowEthereum: true
   });
 
   assert.equal(connector?.id, "injected");
@@ -24,8 +40,7 @@ test("resolvePreferredConnector prefers injected when an injected provider is av
 
 test("resolvePreferredConnector falls back to baseAccount when no injected provider is present", () => {
   const connector = resolvePreferredConnector(CONNECTORS, {
-    hasInjectedProvider: false,
-    isFramed: false
+    ...createEnvironment()
   });
 
   assert.equal(connector?.id, "baseAccount");
@@ -38,8 +53,7 @@ test("resolvePreferredConnector prefers a discovered injected connector in frame
       { id: "xyz.wallet", name: "Hosted Wallet", type: "injected" }
     ],
     {
-      hasInjectedProvider: false,
-      isFramed: true
+      ...createEnvironment({ isFramed: true })
     }
   );
 
@@ -48,11 +62,42 @@ test("resolvePreferredConnector prefers a discovered injected connector in frame
 
 test("resolvePreferredConnector disables baseAccount in framed hosts without an injected wallet", () => {
   const connector = resolvePreferredConnector(CONNECTORS, {
-    hasInjectedProvider: false,
-    isFramed: true
+    ...createEnvironment({ isFramed: true })
   });
 
   assert.equal(connector, undefined);
+});
+
+test("resolvePreferredConnector does not select the static miniapp connector before the host provider is ready", () => {
+  const connector = resolvePreferredConnector(
+    [
+      { id: "farcaster-miniapp", name: "Mini App Wallet", type: "injected" },
+      ...CONNECTORS
+    ],
+    {
+      ...createEnvironment({ isFramed: true })
+    }
+  );
+
+  assert.equal(connector, undefined);
+});
+
+test("resolvePreferredConnector selects the static miniapp connector when the host provider is ready", () => {
+  const connector = resolvePreferredConnector(
+    [
+      { id: "farcaster-miniapp", name: "Mini App Wallet", type: "injected" },
+      ...CONNECTORS
+    ],
+    {
+      ...createEnvironment({
+        hasInjectedProvider: true,
+        hasMiniAppProvider: true,
+        isFramed: true
+      })
+    }
+  );
+
+  assert.equal(connector?.id, "farcaster-miniapp");
 });
 
 test("resolveFallbackConnector retries with injected after a baseAccount frame error", () => {
@@ -61,8 +106,11 @@ test("resolveFallbackConnector retries with injected after a baseAccount frame e
     CONNECTORS,
     new Error("Blocked a frame with origin \"https://mini.swipen.xyz\""),
     {
-      hasInjectedProvider: true,
-      isFramed: true
+      ...createEnvironment({
+        hasInjectedProvider: true,
+        hasWindowEthereum: true,
+        isFramed: true
+      })
     }
   );
 
@@ -75,8 +123,7 @@ test("resolveFallbackConnector does not retry baseAccount after an injected prov
     CONNECTORS,
     new Error("Provider not found"),
     {
-      hasInjectedProvider: false,
-      isFramed: true
+      ...createEnvironment({ isFramed: true })
     }
   );
 
@@ -102,8 +149,7 @@ test("formatWalletConnectError returns a friendly message for frame errors", () 
   );
   assert.equal(
     formatWalletConnectError(new Error("Provider not found"), {
-      hasInjectedProvider: false,
-      isFramed: true
+      ...createEnvironment({ isFramed: true })
     }),
     "No injected wallet is available in this host. Open the app in a wallet-enabled browser or supported mini app."
   );
@@ -116,15 +162,13 @@ test("formatWalletConnectError returns a friendly message for frame errors", () 
 test("getWalletConnectUnavailableReason explains framed hosts without an injected wallet", () => {
   assert.equal(
     getWalletConnectUnavailableReason(CONNECTORS, {
-      hasInjectedProvider: false,
-      isFramed: true
+      ...createEnvironment({ isFramed: true })
     }),
     "No injected wallet is available in this host. Open the app in a wallet-enabled browser or supported mini app."
   );
   assert.equal(
     getWalletConnectUnavailableReason(CONNECTORS, {
-      hasInjectedProvider: false,
-      isFramed: false
+      ...createEnvironment()
     }),
     null
   );

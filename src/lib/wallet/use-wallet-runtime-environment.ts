@@ -10,6 +10,8 @@ const WALLET_RUNTIME_EVENTS = [
 
 const SERVER_SNAPSHOT: WalletRuntimeEnvironment = {
   hasInjectedProvider: false,
+  hasMiniAppProvider: false,
+  hasWindowEthereum: false,
   isFramed: false
 };
 

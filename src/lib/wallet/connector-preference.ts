@@ -5,7 +5,14 @@ type ConnectorLike = {
 
 export type WalletRuntimeEnvironment = {
   hasInjectedProvider: boolean;
+  hasMiniAppProvider: boolean;
+  hasWindowEthereum: boolean;
   isFramed: boolean;
+};
+
+type WalletWindow = Window & {
+  ethereum?: unknown;
+  __swipenMiniAppEthereumProvider?: unknown;
 };
 
 function errorMessage(error: unknown) {
@@ -28,9 +35,15 @@ export function getWalletRuntimeEnvironment(): WalletRuntimeEnvironment {
   if (typeof window === "undefined") {
     return {
       hasInjectedProvider: false,
+      hasMiniAppProvider: false,
+      hasWindowEthereum: false,
       isFramed: false
     };
   }
+
+  const walletWindow = window as WalletWindow;
+  const hasWindowEthereum = typeof walletWindow.ethereum !== "undefined";
+  const hasMiniAppProvider = typeof walletWindow.__swipenMiniAppEthereumProvider !== "undefined";
 
   let isFramed = false;
   try {
@@ -40,7 +53,9 @@ export function getWalletRuntimeEnvironment(): WalletRuntimeEnvironment {
   }
 
   return {
-    hasInjectedProvider: typeof window.ethereum !== "undefined",
+    hasInjectedProvider: hasWindowEthereum || hasMiniAppProvider,
+    hasMiniAppProvider,
+    hasWindowEthereum,
     isFramed
   };
 }
@@ -62,9 +77,20 @@ function resolveInjectedConnector<T extends ConnectorLike>(
     return undefined;
   }
 
-  const targetedInjectedConnector = injectedConnectors.find((connector) => connector.id !== "injected");
-  if (environment.hasInjectedProvider) {
-    return injectedConnectors.find((connector) => connector.id === "injected") ?? targetedInjectedConnector;
+  const targetedInjectedConnector = injectedConnectors.find(
+    (connector) => connector.id !== "injected" && connector.id !== "farcaster-miniapp"
+  );
+  const miniAppConnector = injectedConnectors.find((connector) => connector.id === "farcaster-miniapp");
+  if (environment.hasWindowEthereum) {
+    return (
+      injectedConnectors.find((connector) => connector.id === "injected") ??
+      targetedInjectedConnector ??
+      miniAppConnector
+    );
+  }
+
+  if (environment.hasMiniAppProvider) {
+    return miniAppConnector ?? targetedInjectedConnector;
   }
 
   return targetedInjectedConnector;

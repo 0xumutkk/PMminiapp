@@ -3,7 +3,7 @@ type ConnectorLike = {
   type?: string;
 };
 
-type WalletRuntimeEnvironment = {
+export type WalletRuntimeEnvironment = {
   hasInjectedProvider: boolean;
   isFramed: boolean;
 };

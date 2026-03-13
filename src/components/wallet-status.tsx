@@ -7,6 +7,7 @@ import {
   resolveFallbackConnector,
   resolvePreferredConnector
 } from "@/lib/wallet/connector-preference";
+import { useWalletRuntimeEnvironment } from "@/lib/wallet/use-wallet-runtime-environment";
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -18,7 +19,8 @@ export function WalletStatus() {
   const chainId = useChainId();
   const { connectAsync, connectors, isPending } = useConnect();
   const { isAuthenticated, status: authStatus, signIn, signOut } = useMiniAppAuth();
-  const defaultConnector = resolvePreferredConnector(connectors);
+  const environment = useWalletRuntimeEnvironment();
+  const defaultConnector = resolvePreferredConnector(connectors, environment);
 
   const handleConnect = async () => {
     if (!defaultConnector) {
@@ -31,7 +33,8 @@ export function WalletStatus() {
       const fallbackConnector = resolveFallbackConnector(
         defaultConnector.id,
         connectors,
-        error
+        error,
+        environment
       );
 
       if (fallbackConnector && fallbackConnector.id !== defaultConnector.id) {

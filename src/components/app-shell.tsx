@@ -7,6 +7,7 @@ import {
   resolveFallbackConnector,
   resolvePreferredConnector
 } from "@/lib/wallet/connector-preference";
+import { useWalletRuntimeEnvironment } from "@/lib/wallet/use-wallet-runtime-environment";
 
 type AppShellProps = {
   title: string;
@@ -30,8 +31,9 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
   const { connectAsync, connectors, isPending: isConnecting, error: connectError } = useConnect();
   const { disconnect } = useDisconnect();
   const { isAuthenticated, status: authStatus, signIn, signOut } = useMiniAppAuth();
-  const selectedConnector = resolvePreferredConnector(connectors);
-  const unavailableConnectError = mounted ? getWalletConnectUnavailableReason(connectors) : null;
+  const environment = useWalletRuntimeEnvironment();
+  const selectedConnector = resolvePreferredConnector(connectors, environment);
+  const unavailableConnectError = mounted ? getWalletConnectUnavailableReason(connectors, environment) : null;
 
   useEffect(() => {
     setMounted(true);
@@ -55,7 +57,7 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
   const displayConnectError =
     localConnectError ??
     unavailableConnectError ??
-    (connectError ? formatWalletConnectError(connectError) : null);
+    (connectError ? formatWalletConnectError(connectError, environment) : null);
 
   const handleConnect = async () => {
     console.log("[AppShell] Available connectors:", connectors.map(c => `${c.id} (${c.name})`));
@@ -74,7 +76,8 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
       const fallbackConnector = resolveFallbackConnector(
         selectedConnector.id,
         connectors,
-        error
+        error,
+        environment
       );
 
       if (fallbackConnector && fallbackConnector.id !== selectedConnector.id) {
@@ -82,12 +85,12 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
           await connectAsync({ connector: fallbackConnector });
           return;
         } catch (fallbackError) {
-          setLocalConnectError(formatWalletConnectError(fallbackError));
+          setLocalConnectError(formatWalletConnectError(fallbackError, environment));
           return;
         }
       }
 
-      setLocalConnectError(formatWalletConnectError(error));
+      setLocalConnectError(formatWalletConnectError(error, environment));
     }
   };
 

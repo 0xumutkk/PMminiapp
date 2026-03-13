@@ -3,18 +3,12 @@
 import { useAccount, useChainId, useConnect, useDisconnect } from "wagmi";
 import { base } from "wagmi/chains";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
-import { useMiniAppContext } from "@/lib/use-miniapp-context";
 
-function resolvePreferredConnector(
-  connectors: ReturnType<typeof useConnect>["connectors"],
-  preferFarcaster: boolean
-) {
-  const farcaster = connectors.find((c) => c.id === "farcaster" || c.id === "farcaster-miniapp");
+function resolvePreferredConnector(connectors: ReturnType<typeof useConnect>["connectors"]) {
+  const baseAccount = connectors.find((c) => c.id === "baseAccount");
   const injected = connectors.find((c) => c.id === "injected");
 
-  return preferFarcaster
-    ? (farcaster ?? injected ?? connectors[0])
-    : (injected ?? farcaster ?? connectors[0]);
+  return baseAccount ?? injected ?? connectors[0];
 }
 
 function shortAddress(address: string) {
@@ -27,10 +21,7 @@ export function WalletStatus() {
   const chainId = useChainId();
   const { connect, connectors, isPending } = useConnect();
   const { isAuthenticated, status: authStatus, signIn, signOut } = useMiniAppAuth();
-  const { inMiniAppHost, isLikelyMiniAppHost, loaded: miniAppContextLoaded } = useMiniAppContext();
-  const preferFarcaster = miniAppContextLoaded ? inMiniAppHost : isLikelyMiniAppHost;
-  const defaultConnector = resolvePreferredConnector(connectors, preferFarcaster);
-  const isMiniAppBooting = isLikelyMiniAppHost && !miniAppContextLoaded;
+  const defaultConnector = resolvePreferredConnector(connectors);
 
   if (isPending) {
     return <p className="wallet-status">Connecting wallet...</p>;
@@ -41,10 +32,10 @@ export function WalletStatus() {
       <button
         className="wallet-connect-btn"
         onClick={() => connect({ connector: defaultConnector })}
-        disabled={!defaultConnector || isMiniAppBooting}
+        disabled={!defaultConnector}
         type="button"
       >
-        {isMiniAppBooting ? "Preparing..." : "Connect Wallet"}
+        Connect Wallet
       </button>
     );
   }

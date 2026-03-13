@@ -1,17 +1,18 @@
-import { claimAuthNonce, releaseAuthNonce } from "@/lib/security/auth-nonce-store";
 import { getRequestId } from "@/lib/security/request-context";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/security/rate-limit";
 import { logEvent } from "@/lib/observability";
 import {
   clearAuthCookieHeader,
+  clearNonceCookieHeader,
   createAuthCookieHeader,
+  createMiniAppAuthToken,
+  getAuthNonceFromRequest,
   normalizeMiniAppDomain,
   parseSiwfMessage,
-  resolveExpectedAuthDomain,
-  verifyMiniAppAuthToken,
-  verifySiwfMessage
+  resolveExpectedAuthDomain
 } from "@/lib/security/miniapp-auth";
-import { isAddress } from "viem";
+import { createPublicClient, http, isAddress } from "viem";
+import { base } from "viem/chains";
 
 export const runtime = "nodejs";
 
@@ -24,7 +25,6 @@ type MessageTimingValidation =
   | { ok: false; error: string }
   | {
       ok: true;
-      replayTtlMs: number;
     };
 
 type DomainValidationCandidate = {
@@ -47,18 +47,20 @@ function errorToMessage(error: unknown) {
   return "Authentication failed";
 }
 
-function parseNumberEnv(name: string, fallback: number) {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
+function parseNumberEnv(names: string[], fallback: number) {
+  for (const name of names) {
+    const raw = process.env[name];
+    if (!raw) {
+      continue;
+    }
+
+    const value = Number(raw);
+    if (Number.isFinite(value) && value > 0) {
+      return value;
+    }
   }
 
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    return fallback;
-  }
-
-  return value;
+  return fallback;
 }
 
 function parseIsoTime(value: string | undefined) {
@@ -75,8 +77,8 @@ function validateMessageTiming(parsedMessage: {
   expirationTime?: string;
   notBefore?: string;
 }): MessageTimingValidation {
-  const maxAgeSeconds = parseNumberEnv("AUTH_SIWF_MAX_AGE_SECONDS", 600);
-  const clockSkewSeconds = parseNumberEnv("AUTH_CLOCK_SKEW_SECONDS", 30);
+  const maxAgeSeconds = parseNumberEnv(["AUTH_SIWE_MAX_AGE_SECONDS", "AUTH_SIWF_MAX_AGE_SECONDS"], 600);
+  const clockSkewSeconds = parseNumberEnv(["AUTH_CLOCK_SKEW_SECONDS"], 30);
 
   const now = Date.now();
   const maxAgeMs = maxAgeSeconds * 1_000;
@@ -84,33 +86,28 @@ function validateMessageTiming(parsedMessage: {
 
   const issuedAtMs = parseIsoTime(parsedMessage.issuedAt);
   if (!issuedAtMs) {
-    return { ok: false, error: "SIWF message is missing a valid issuedAt value" };
+    return { ok: false, error: "SIWE message is missing a valid issuedAt value" };
   }
 
   if (issuedAtMs > now + skewMs) {
-    return { ok: false, error: "SIWF message issuedAt is in the future" };
+    return { ok: false, error: "SIWE message issuedAt is in the future" };
   }
 
   if (now - issuedAtMs > maxAgeMs) {
-    return { ok: false, error: "SIWF message has expired by age limit" };
+    return { ok: false, error: "SIWE message has expired by age limit" };
   }
 
   const notBeforeMs = parseIsoTime(parsedMessage.notBefore);
   if (notBeforeMs && now + skewMs < notBeforeMs) {
-    return { ok: false, error: "SIWF message is not valid yet" };
+    return { ok: false, error: "SIWE message is not valid yet" };
   }
 
   const expirationMs = parseIsoTime(parsedMessage.expirationTime);
   if (expirationMs && now - skewMs > expirationMs) {
-    return { ok: false, error: "SIWF message expirationTime has passed" };
+    return { ok: false, error: "SIWE message expirationTime has passed" };
   }
 
-  const replayTtlMs = expirationMs ? Math.max(60_000, expirationMs - now) : maxAgeMs;
-
-  return {
-    ok: true,
-    replayTtlMs
-  };
+  return { ok: true };
 }
 
 function badRequest(message: string, requestId: string, headers: Record<string, string>) {
@@ -186,7 +183,7 @@ export async function POST(request: Request) {
   const requestId = getRequestId(request);
 
   const rate = await checkRateLimit({
-    bucket: "auth-siwf",
+    bucket: "auth-siwe",
     request,
     limit: Number(process.env.AUTH_RATE_LIMIT_PER_MINUTE ?? "30"),
     windowMs: 60_000
@@ -220,15 +217,20 @@ export async function POST(request: Request) {
 
   const parsedMessage = parseSiwfMessage(body.message);
   if (!parsedMessage) {
-    return badRequest("Invalid SIWF message format", requestId, rateHeaders);
+    return badRequest("Invalid SIWE message format", requestId, rateHeaders);
   }
 
   if (!isAddress(parsedMessage.address)) {
-    return badRequest("SIWF message contains an invalid address", requestId, rateHeaders);
+    return badRequest("SIWE message contains an invalid address", requestId, rateHeaders);
   }
 
   if (!parsedMessage.nonce || parsedMessage.nonce.length < 8) {
-    return badRequest("SIWF message nonce is missing or too short", requestId, rateHeaders);
+    return badRequest("SIWE message nonce is missing or too short", requestId, rateHeaders);
+  }
+
+  const nonceFromCookie = getAuthNonceFromRequest(request);
+  if (!nonceFromCookie || nonceFromCookie !== parsedMessage.nonce) {
+    return badRequest("SIWE nonce does not match the current sign-in session", requestId, rateHeaders);
   }
 
   const expectedDomain = resolveExpectedAuthDomain(request);
@@ -247,7 +249,7 @@ export async function POST(request: Request) {
   const allowedDomains = new Set(expectedDomainCandidates.map((candidate) => candidate.normalized));
 
   if (!allowedDomains.has(messageDomain)) {
-    return badRequest("SIWF message domain does not match Mini App domain", requestId, rateHeaders);
+    return badRequest("SIWE message domain does not match app domain", requestId, rateHeaders);
   }
 
   const timingValidation = validateMessageTiming(parsedMessage);
@@ -255,141 +257,71 @@ export async function POST(request: Request) {
     return badRequest(timingValidation.error, requestId, rateHeaders);
   }
 
-  let nonceClaimed = false;
   try {
-    const domainCandidates = buildDomainCandidates(parsedMessage.domain, messageDomain, expectedDomain);
-    const hostOnlyDomain = parsedMessage.domain.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0] ?? parsedMessage.domain;
-    const domainsToTry = [hostOnlyDomain, parsedMessage.domain, ...domainCandidates.map((c) => c.raw)];
-    const uniqueDomains = [...new Set(domainsToTry)];
+    const rpcUrl = process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "https://mainnet.base.org";
+    const publicClient = createPublicClient({
+      chain: base,
+      transport: http(rpcUrl)
+    });
 
-    let verifiedDomain = expectedDomain;
-    let verifyResult: Awaited<ReturnType<typeof verifySiwfMessage>> | null = null;
-    let verifyError: unknown = null;
+    const verified = await publicClient.verifySiweMessage({
+      address: parsedMessage.address as `0x${string}`,
+      domain: messageDomain,
+      message: body.message,
+      nonce: nonceFromCookie,
+      signature: body.signature as `0x${string}`,
+      time: new Date()
+    });
 
-    for (const domain of uniqueDomains) {
-      const host = domain.replace(/^https?:\/\//, "").split("/")[0]?.trim();
-      if (!host) continue;
-      try {
-        verifyResult = await verifySiwfMessage({
-          message: body.message,
-          signature: body.signature,
-          domain: host,
-          acceptAuthAddress: true
-        });
-        verifiedDomain = host;
-        break;
-      } catch (error) {
-        verifyError = error;
-      }
+    if (!verified) {
+      throw new Error("SIWE verification failed");
     }
 
-    if (!verifyResult) {
-      throw verifyError ?? new Error("SIWF verification failed");
-    }
+    const sessionMaxAgeSeconds = parseNumberEnv(["AUTH_SESSION_MAX_AGE_SECONDS"], 60 * 60 * 24 * 7);
+    const { token, claims } = createMiniAppAuthToken({
+      address: parsedMessage.address as `0x${string}`,
+      domain: messageDomain,
+      maxAgeSeconds: sessionMaxAgeSeconds
+    });
 
-    const jwtDomainCandidates = buildDomainCandidates(
-      verifiedDomain,
-      parsedMessage.domain,
-      expectedDomain,
-      ...domainCandidates.map((candidate) => candidate.normalized)
-    );
-    const siwfAddress = parsedMessage.address;
-    let claims = await verifyMiniAppAuthToken(
-      verifyResult.token,
-      verifiedDomain,
-      siwfAddress
-    );
-    if (!claims) {
-      for (const candidate of jwtDomainCandidates) {
-        if (candidate.raw === verifiedDomain) {
-          continue;
-        }
-
-        claims = await verifyMiniAppAuthToken(
-          verifyResult.token,
-          candidate.raw,
-          siwfAddress
-        );
-        if (claims) {
-          break;
-        }
-      }
-    }
-
-    if (!claims) {
-      const headers = new Headers(rateHeaders);
-      headers.set("Cache-Control", "no-store");
-      for (const c of clearAuthCookieHeader()) {
-        headers.append("Set-Cookie", c);
-      }
-      return Response.json(
-        { error: "Quick Auth token verification failed", requestId },
-        { status: 401, headers }
-      );
-    }
-
-    if (claims.address.toLowerCase() !== parsedMessage.address.toLowerCase()) {
-      const headers = new Headers(rateHeaders);
-      headers.set("Cache-Control", "no-store");
-      for (const c of clearAuthCookieHeader()) {
-        headers.append("Set-Cookie", c);
-      }
-      return Response.json(
-        { error: "Verified token address does not match SIWF message address", requestId },
-        { status: 401, headers }
-      );
-    }
-
-    nonceClaimed = await claimAuthNonce(parsedMessage.nonce, timingValidation.replayTtlMs);
-    if (!nonceClaimed) {
-      return Response.json(
-        { error: "SIWF nonce was already used", requestId },
-        {
-          status: 409,
-          headers: rateHeaders
-        }
-      );
-    }
-
-    const maxAgeSeconds = Math.max(60, claims.exp - Math.floor(Date.now() / 1_000));
     const cookieHeader = createAuthCookieHeader(
-      verifyResult.token,
-      maxAgeSeconds,
+      token,
+      sessionMaxAgeSeconds,
       claims.address,
-      verifiedDomain
+      messageDomain
     );
-    const setCookieParts = cookieHeader.split("\n").filter(Boolean);
+
     const headers = new Headers(rateHeaders);
-    for (const part of setCookieParts) {
-      headers.append("Set-Cookie", part);
-    }
     headers.set("Cache-Control", "no-store");
     headers.set("X-Request-Id", requestId);
+    for (const cookie of cookieHeader.split("\n")) {
+      headers.append("Set-Cookie", cookie);
+    }
+    headers.append("Set-Cookie", clearNonceCookieHeader());
 
     return Response.json(
       {
         authenticated: true,
         user: {
-          fid: claims.fid,
           address: claims.address,
           expiresAt: new Date(claims.exp * 1_000).toISOString()
         },
-        token: verifyResult.token // Bearer fallback when cookies blocked in iframe
+        token
       },
       { headers }
     );
   } catch (error) {
-    if (nonceClaimed && parsedMessage.nonce) {
-      await releaseAuthNonce(parsedMessage.nonce);
-    }
-
     const message = errorToMessage(error);
-    logEvent("warn", "auth_siwf_failed", { requestId, message });
+    logEvent("warn", "auth_siwe_failed", { requestId, message });
+
     const headers = new Headers(rateHeaders);
     headers.set("Cache-Control", "no-store");
-    for (const c of clearAuthCookieHeader()) {
-      headers.append("Set-Cookie", c);
+    headers.set("X-Request-Id", requestId);
+    for (const cookie of clearAuthCookieHeader()) {
+      headers.append("Set-Cookie", cookie);
     }
+    headers.append("Set-Cookie", clearNonceCookieHeader());
+
     return Response.json({ error: message, requestId }, { status: 401, headers });
   }
 }

@@ -1,3 +1,7 @@
+import path from "node:path";
+
+const emptyModulePath = path.resolve("./src/lib/shims/empty-module.ts");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typedRoutes: true,
@@ -7,9 +11,17 @@ const nextConfig = {
   turbopack: {
     resolveAlias: {
       "@react-native-async-storage/async-storage": {
-        browser: "./src/lib/shims/empty-module.ts"
+        browser: emptyModulePath
       }
     }
+  },
+  webpack(config) {
+    config.resolve = config.resolve ?? {};
+    config.resolve.alias = {
+      ...(config.resolve.alias ?? {}),
+      "@react-native-async-storage/async-storage": emptyModulePath
+    };
+    return config;
   },
   async headers() {
     const frameAncestors = [
@@ -19,12 +31,7 @@ const nextConfig = {
       "https://base.dev",
       "https://*.base.dev",
       "https://base.org",
-      "https://*.base.org",
-      "https://warpcast.com",
-      "https://*.warpcast.com",
-      "https://farcaster.xyz",
-      "https://*.farcaster.xyz",
-      "https://mini.swipen.xyz"
+      "https://*.base.org"
     ].join(" ");
 
     const cspConnectSrc = [
@@ -34,7 +41,6 @@ const nextConfig = {
       "https://relay.walletconnect.com",
       "wss://relay.walletconnect.com",
       "https://api.limitless.exchange",
-      "https://auth.farcaster.xyz",
       "https://api.upbit.com",
       "https://api.coingecko.com",
       "https://*.base.org",
@@ -44,7 +50,7 @@ const nextConfig = {
 
     const cspHeader = [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://auth.farcaster.xyz",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "img-src 'self' data: https://*.googleusercontent.com https://*.limitless.exchange https://imagedelivery.net blob:",
       "font-src 'self' https://fonts.gstatic.com",

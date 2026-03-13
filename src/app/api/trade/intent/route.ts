@@ -643,9 +643,16 @@ export async function POST(request: Request) {
       );
     }
 
-    // We don't enforce claims.address === body.walletAddress because Farcaster auth 
-    // uses a different signing key than the injected transaction wallet.
-    // The blockchain inherently protects transactions since the user must sign the returned payload.
+    if (claims.address.toLowerCase() !== body.walletAddress.toLowerCase()) {
+      return Response.json(
+        { error: "Authenticated wallet does not match trade wallet", requestId },
+        {
+          status: 403,
+          headers: rateHeaders
+        }
+      );
+    }
+
     verifiedWalletAddress = body.walletAddress;
   }
 

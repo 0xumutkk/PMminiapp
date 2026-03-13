@@ -5,13 +5,15 @@ import {
   shouldUseDirectTransactionSubmission
 } from "@/lib/trade/execution-strategy";
 
-test("prefers wallet_sendCalls for Farcaster connectors", () => {
+test("prefers wallet_sendCalls for Base-hosted connectors", () => {
+  assert.equal(shouldPreferWalletSendCalls("baseAccount"), true);
   assert.equal(shouldPreferWalletSendCalls("farcaster"), true);
   assert.equal(shouldPreferWalletSendCalls("farcaster-miniapp"), true);
   assert.equal(shouldPreferWalletSendCalls("injected"), false);
 });
 
-test("avoids direct single-tx submission for Farcaster wallets", () => {
+test("avoids direct single-tx submission for Base-hosted wallets", () => {
+  assert.equal(shouldUseDirectTransactionSubmission(1, "baseAccount", "buy"), false);
   assert.equal(shouldUseDirectTransactionSubmission(1, "farcaster", "buy"), false);
   assert.equal(shouldUseDirectTransactionSubmission(1, "farcaster-miniapp", "sell"), false);
   assert.equal(shouldUseDirectTransactionSubmission(1, "injected", "buy"), true);

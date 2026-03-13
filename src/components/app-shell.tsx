@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { MiniAppContextBadge } from "@/components/miniapp-context-badge";
 
 type AppShellProps = {
   title: string;
@@ -12,20 +11,14 @@ type AppShellProps = {
 
 import Link from "next/link";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
-import { useMiniAppContext } from "@/lib/use-miniapp-context";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import { useRouter, usePathname } from "next/navigation";
 
-function resolvePreferredConnector(
-  connectors: ReturnType<typeof useConnect>["connectors"],
-  preferFarcaster: boolean
-) {
-  const farcaster = connectors.find((c) => c.id === "farcaster" || c.id === "farcaster-miniapp");
+function resolvePreferredConnector(connectors: ReturnType<typeof useConnect>["connectors"]) {
+  const baseAccount = connectors.find((c) => c.id === "baseAccount");
   const injected = connectors.find((c) => c.id === "injected");
 
-  return preferFarcaster
-    ? (farcaster ?? injected ?? connectors[0])
-    : (injected ?? farcaster ?? connectors[0]);
+  return baseAccount ?? injected ?? connectors[0];
 }
 
 export function AppShell({ title, subtitle, children, scrollContent = false }: AppShellProps) {
@@ -36,13 +29,8 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
   const { address, isConnected, status: connectionStatus } = useAccount();
   const { connect, connectors, isPending: isConnecting, error: connectError } = useConnect();
   const { disconnect } = useDisconnect();
-  const { inMiniAppHost, isLikelyMiniAppHost, loaded: miniAppContextLoaded } = useMiniAppContext();
   const { isAuthenticated, status: authStatus, signIn, signOut } = useMiniAppAuth();
-
-  // Only prefer farcaster if we definitively have context, or we are likely in host and still loading
-  const preferFarcaster = miniAppContextLoaded ? inMiniAppHost : isLikelyMiniAppHost;
-  const selectedConnector = resolvePreferredConnector(connectors, preferFarcaster);
-  const isMiniAppBooting = mounted && isLikelyMiniAppHost && !miniAppContextLoaded;
+  const selectedConnector = resolvePreferredConnector(connectors);
 
   useEffect(() => {
     setMounted(true);
@@ -119,16 +107,16 @@ export function AppShell({ title, subtitle, children, scrollContent = false }: A
               <button
                 className="segmented-control__item"
                 onClick={handleConnect}
-                disabled={isAnyConnecting || isMiniAppBooting}
+                disabled={isAnyConnecting || !selectedConnector}
                 style={{
                   border: 'none',
                   background: 'none',
-                  cursor: isAnyConnecting || isMiniAppBooting ? 'not-allowed' : 'pointer',
+                  cursor: isAnyConnecting || !selectedConnector ? 'not-allowed' : 'pointer',
                   fontWeight: 700,
-                  opacity: isAnyConnecting || isMiniAppBooting ? 0.6 : 1
+                  opacity: isAnyConnecting || !selectedConnector ? 0.6 : 1
                 }}
               >
-                {isMiniAppBooting ? 'Preparing...' : isAnyConnecting ? 'Connecting...' : (connectError ? 'Retry' : 'Connect')}
+                {isAnyConnecting ? 'Connecting...' : (connectError ? 'Retry' : 'Connect')}
               </button>
               {isAnyConnecting && (
                 <button

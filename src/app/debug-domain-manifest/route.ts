@@ -36,7 +36,7 @@ export async function GET(request: Request) {
         description: appDescription,
         homeUrl: origin,
         iconUrl: `${origin}/icon.png`,
-        splashImageUrl: `${origin}/splash.png`,
+        splashImageUrl: `${origin}/Splash.png`,
         ogImageUrl: `${origin}/og.png`
       },
       {

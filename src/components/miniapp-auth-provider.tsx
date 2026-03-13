@@ -10,10 +10,10 @@ import {
   useRef,
   useState
 } from "react";
-import { requestMiniAppSignIn } from "@/lib/miniapp-sdk-safe";
+import { createSiweMessage } from "viem/siwe";
+import { useAccount, useChainId, useSignMessage } from "wagmi";
 
 type MiniAppAuthUser = {
-  fid: number;
   address: string;
   expiresAt: string;
 };
@@ -88,20 +88,16 @@ function errorToMessage(error: unknown): string {
     return "Authentication failed";
   }
 
-  if (message.toLowerCase().includes("valid fid") || message.toLowerCase().includes("fid is required")) {
-    return "Sign in requires a Farcaster account. Open this app from Base App while logged in to your Farcaster account. Some preview tools may not support sign-in.";
-  }
-
-  if (message.toLowerCase().includes("invalid_nonce") || message.toLowerCase().includes("nonce")) {
+  if (message.toLowerCase().includes("nonce")) {
     return "Sign-in session expired. Please try again.";
   }
 
-  if (message.toLowerCase().includes("invalid_signature")) {
+  if (message.toLowerCase().includes("signature")) {
     return "Signature verification failed. Please try signing in again.";
   }
 
-  if (message.toLowerCase().includes("mini app sdk unavailable")) {
-    return "Sign in is only available inside Base App.";
+  if (message.toLowerCase().includes("connect your wallet")) {
+    return "Connect a wallet before signing in.";
   }
 
   return message;
@@ -124,19 +120,29 @@ async function parseSessionResponse(response: Response) {
   return body;
 }
 
-async function fetchSiwfNonce(): Promise<string> {
-  const res = await fetch("/api/auth/nonce", { method: "POST", credentials: "include" });
+async function fetchSiweNonce(): Promise<string> {
+  const res = await fetch("/api/auth/nonce", {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store"
+  });
+
   if (!res.ok) {
     throw new Error("Failed to get sign-in nonce");
   }
+
   const data = (await res.json()) as { nonce?: string };
   if (!data?.nonce) {
     throw new Error("Invalid nonce response");
   }
+
   return data.nonce;
 }
 
 export function MiniAppAuthProvider({ children }: PropsWithChildren) {
+  const { address, isConnected } = useAccount();
+  const chainId = useChainId();
+  const { signMessageAsync } = useSignMessage();
   const [status, setStatus] = useState<MiniAppAuthStatus>("loading");
   const [user, setUser] = useState<MiniAppAuthUser | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -145,9 +151,9 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
 
   const getAuthHeaders = useCallback(() => {
     const headers: Record<string, string> = {};
-    const t = tokenRef.current;
-    if (t) {
-      headers.Authorization = `Bearer ${t}`;
+    const token = tokenRef.current;
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
     }
     return headers;
   }, []);
@@ -185,6 +191,7 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
         tokenRef.current = payload.token;
         persistBearerToken(payload.token);
       }
+
       setUser(payload.user);
       setStatus("authenticated");
       setError(null);
@@ -212,30 +219,39 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
   const signIn = useCallback(async () => {
     setError(null);
 
+    if (!isConnected || !address || !chainId) {
+      setStatus("guest");
+      setError("Connect your wallet before signing in.");
+      return false;
+    }
+
     setStatus("authenticating");
+
     try {
-      const nonce = await fetchSiwfNonce();
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1_000).toISOString();
-      const signInResult = await requestMiniAppSignIn({
+      const nonce = await fetchSiweNonce();
+      const issuedAt = new Date();
+      const expirationTime = new Date(issuedAt.getTime() + 10 * 60 * 1_000);
+      const message = createSiweMessage({
+        address,
+        chainId,
+        domain: window.location.host,
         nonce,
-        expirationTime: expiresAt,
-        acceptAuthAddress: true
+        uri: window.location.origin,
+        version: "1",
+        statement: "Sign in to continue using this app.",
+        issuedAt,
+        expirationTime
       });
 
-      if (!signInResult) {
-        throw new Error("Sign in request was rejected");
-      }
+      const signature = await signMessageAsync({ message });
 
-      const response = await fetch("/api/auth/siwf", {
+      const response = await fetch("/api/auth/siwe", {
         method: "POST",
         credentials: "include",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          message: signInResult.message,
-          signature: signInResult.signature
-        })
+        body: JSON.stringify({ message, signature })
       });
 
       const payload = await parseSessionResponse(response);
@@ -247,6 +263,7 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
         tokenRef.current = payload.token;
         persistBearerToken(payload.token);
       }
+
       setUser(payload.user);
       setStatus("authenticated");
       setError(null);
@@ -257,12 +274,13 @@ export function MiniAppAuthProvider({ children }: PropsWithChildren) {
       setError(errorToMessage(signInError));
       return false;
     }
-  }, []);
+  }, [address, chainId, isConnected, signMessageAsync]);
 
   const signOut = useCallback(async () => {
     setError(null);
     tokenRef.current = null;
     persistBearerToken(null);
+
     try {
       await fetch("/api/auth/session", {
         method: "DELETE",

@@ -278,7 +278,7 @@ export async function GET(request: Request) {
   const iconUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_ICON_URL, `${baseUrl}/icon.png`, requestHost);
   const splashImageUrl = resolveAssetUrl(
     process.env.NEXT_PUBLIC_SPLASH_IMAGE_URL,
-    `${baseUrl}/splash.png`,
+    `${baseUrl}/Splash.png`,
     requestHost
   );
   const ogImageUrl = resolveAssetUrl(process.env.NEXT_PUBLIC_OG_IMAGE_URL, `${baseUrl}/og.png`, requestHost);

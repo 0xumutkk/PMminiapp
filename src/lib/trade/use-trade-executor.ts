@@ -483,7 +483,9 @@ export function useTradeExecutor() {
         throw new Error("Wallet must be connected before trading");
       }
 
-      // Removed wallet mismatch check: Farcaster embedded wallets often have different auth and transaction addresses.
+      if (user?.address && user.address.toLowerCase() !== address.toLowerCase()) {
+        throw new Error("Authenticated wallet does not match the connected wallet");
+      }
 
       const walletForTrade = tradeAddress ?? address;
       if (!walletForTrade) {

@@ -1,11 +1,15 @@
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { isAddress } from "viem";
+import { parseSiweMessage as parseRawSiweMessage } from "viem/siwe";
 
 export const MINIAPP_AUTH_COOKIE = "miniapp_auth_token";
 export const MINIAPP_AUTH_ADDRESS_COOKIE = "miniapp_auth_address";
 export const MINIAPP_AUTH_DOMAIN_COOKIE = "miniapp_auth_domain";
+export const MINIAPP_AUTH_NONCE_COOKIE = "miniapp_auth_nonce";
+
+const AUTH_TOKEN_ISSUER = "base-standard-web-app";
 
 export type MiniAppAuthClaims = {
-  fid: number;
   address: `0x${string}`;
   aud: string;
   iss: string;
@@ -20,30 +24,40 @@ export type ParsedSiwfMessage = {
   issuedAt?: string;
   expirationTime?: string;
   notBefore?: string;
-};
-
-type QuickAuthClient = {
-  verifyJwt: (options: { token: string; domain: string }) => Promise<unknown>;
-  verifySiwf: (options: { message: string; signature: string; domain: string }) => Promise<{ token: string }>;
+  chainId?: number;
+  uri?: string;
+  version?: string;
+  statement?: string;
 };
 
 declare global {
-  var __miniAppQuickAuthClientPromise: Promise<QuickAuthClient | null> | undefined;
+  var __miniAppAuthSessionSecret: string | undefined;
 }
 
-async function getQuickAuthClient() {
-  globalThis.__miniAppQuickAuthClientPromise ??= (async () => {
-    try {
-      const { createClient } = await import("@farcaster/quick-auth");
-      return createClient({
-        origin: process.env.FARCASTER_QUICK_AUTH_SERVER_ORIGIN
-      }) as QuickAuthClient;
-    } catch {
-      return null;
-    }
-  })();
+function getSessionSecret() {
+  const configured = process.env.AUTH_SESSION_SECRET?.trim();
+  if (configured) {
+    return configured;
+  }
 
-  return globalThis.__miniAppQuickAuthClientPromise;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("AUTH_SESSION_SECRET is required in production");
+  }
+
+  globalThis.__miniAppAuthSessionSecret ??= randomBytes(32).toString("hex");
+  return globalThis.__miniAppAuthSessionSecret;
+}
+
+function encodeJsonBase64Url(value: unknown) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function decodeJsonBase64Url<T>(value: string) {
+  return JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as T;
+}
+
+function signToken(input: string) {
+  return createHmac("sha256", getSessionSecret()).update(input).digest();
 }
 
 export function normalizeMiniAppDomain(raw: string) {
@@ -168,114 +182,98 @@ export function getAuthDomainFromRequest(request: Request) {
   return normalized || null;
 }
 
-function payloadToClaims(
-  payload: Record<string, unknown>,
-  addressFromSiwf?: string
-): MiniAppAuthClaims | null {
-  let address = payload.address;
-  if (typeof address !== "string" || !isAddress(address)) {
-    address = addressFromSiwf;
-  }
-  if (typeof address !== "string" || !isAddress(address)) {
-    return null;
-  }
+export function getAuthNonceFromRequest(request: Request) {
+  const cookies = parseCookieHeader(request.headers.get("cookie"));
+  return cookies.get(MINIAPP_AUTH_NONCE_COOKIE) ?? null;
+}
 
-  const fidRaw = payload.sub;
-  const fid =
-    typeof fidRaw === "number" ? fidRaw : typeof fidRaw === "string" ? Number(fidRaw) : Number.NaN;
-  if (!Number.isInteger(fid) || fid <= 0) {
-    return null;
-  }
+export function createMiniAppAuthToken(params: {
+  address: `0x${string}`;
+  domain: string;
+  maxAgeSeconds: number;
+}) {
+  const now = Math.floor(Date.now() / 1_000);
+  const claims: MiniAppAuthClaims = {
+    address: params.address,
+    aud: normalizeMiniAppDomain(params.domain),
+    iss: AUTH_TOKEN_ISSUER,
+    iat: now,
+    exp: now + Math.max(60, params.maxAgeSeconds)
+  };
 
-  const audRaw = payload.aud;
-  const aud = Array.isArray(audRaw) ? audRaw[0] : audRaw;
-  if (typeof aud !== "string" || aud.length === 0) {
-    return null;
-  }
-
-  const iss = payload.iss;
-  if (typeof iss !== "string" || iss.length === 0) {
-    return null;
-  }
-
-  const exp = payload.exp;
-  const iat = payload.iat;
-  if (typeof exp !== "number" || typeof iat !== "number") {
-    return null;
-  }
+  const header = encodeJsonBase64Url({ alg: "HS256", typ: "JWT" });
+  const payload = encodeJsonBase64Url(claims);
+  const input = `${header}.${payload}`;
+  const signature = signToken(input).toString("base64url");
 
   return {
-    fid,
-    address: address as `0x${string}`,
-    aud,
-    iss,
-    exp,
-    iat
+    token: `${input}.${signature}`,
+    claims
   };
 }
 
 export async function verifyMiniAppAuthToken(
   token: string,
   domain: string,
-  addressFromSiwf?: string
+  expectedAddress?: string
 ) {
   if (!token || token.length === 0 || !domain) {
     return null;
   }
 
   try {
-    const client = await getQuickAuthClient();
-    if (!client) {
+    const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
+    if (!encodedHeader || !encodedPayload || !encodedSignature) {
       return null;
     }
 
-    const payload = await client.verifyJwt({
-      token,
-      domain
-    });
+    const header = decodeJsonBase64Url<{ alg?: string; typ?: string }>(encodedHeader);
+    if (header.alg !== "HS256" || header.typ !== "JWT") {
+      return null;
+    }
 
-    return payloadToClaims(payload as Record<string, unknown>, addressFromSiwf);
+    const actualSignature = Buffer.from(encodedSignature, "base64url");
+    const expectedSignature = signToken(`${encodedHeader}.${encodedPayload}`);
+
+    if (actualSignature.length !== expectedSignature.length) {
+      return null;
+    }
+
+    if (!timingSafeEqual(actualSignature, expectedSignature)) {
+      return null;
+    }
+
+    const claims = decodeJsonBase64Url<MiniAppAuthClaims>(encodedPayload);
+    if (!claims || claims.iss !== AUTH_TOKEN_ISSUER) {
+      return null;
+    }
+
+    if (!isAddress(claims.address)) {
+      return null;
+    }
+
+    const now = Math.floor(Date.now() / 1_000);
+    if (!Number.isFinite(claims.exp) || claims.exp <= now) {
+      return null;
+    }
+
+    if (normalizeMiniAppDomain(domain) !== claims.aud) {
+      return null;
+    }
+
+    if (expectedAddress && isAddress(expectedAddress)) {
+      if (claims.address.toLowerCase() !== expectedAddress.toLowerCase()) {
+        return null;
+      }
+    }
+
+    return claims;
   } catch {
     return null;
   }
 }
 
-export async function verifySiwfMessage(params: {
-  message: string;
-  signature: string;
-  domain: string;
-  acceptAuthAddress?: boolean;
-}) {
-  const { message, signature, domain, acceptAuthAddress = true } = params;
-  const origin = process.env.FARCASTER_QUICK_AUTH_SERVER_ORIGIN ?? "https://auth.farcaster.xyz";
-
-  const res = await fetch(`${origin}/verify-siwf`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, signature, domain, acceptAuthAddress })
-  });
-
-  const data = (await res.json().catch(() => null)) as
-    | { valid?: boolean; token?: string; error?: string; error_message?: string }
-    | null;
-
-  if (!res.ok) {
-    const msg = data?.error_message ?? data?.error ?? `Request failed with status ${res.status}`;
-    throw new Error(msg);
-  }
-
-  if (data?.valid === false) {
-    throw new Error(data.error_message ?? data.error ?? "SIWF verification failed");
-  }
-
-  if (!data?.token) {
-    throw new Error("No token in verification response");
-  }
-
-  return { token: data.token };
-}
-
-function shouldUseSameSiteNoneForCookies() {
+function shouldUseSecureCookies() {
   const appUrl = process.env.NEXT_PUBLIC_MINI_APP_URL ?? "";
   return (
     process.env.NODE_ENV === "production" ||
@@ -283,15 +281,11 @@ function shouldUseSameSiteNoneForCookies() {
   );
 }
 
-function authCookieAttributes(maxAgeSeconds: number) {
+function cookieAttributes(maxAgeSeconds: number, httpOnly = true) {
   const maxAge = Math.max(60, maxAgeSeconds);
-  const useNone = shouldUseSameSiteNoneForCookies();
-  const sameSite = useNone
-    ? " SameSite=None;" // Required for cookies in embedded iframe (Base App)
-    : " SameSite=Lax;";
-  const secure = useNone || process.env.NODE_ENV === "production" ? " Secure;" : "";
-  const partitioned = useNone ? " Partitioned;" : ""; // CHIPS: allows cookies in iframe when third-party cookies blocked
-  return `Path=/; HttpOnly; Max-Age=${maxAge};${sameSite}${secure}${partitioned}`;
+  const secure = shouldUseSecureCookies() ? " Secure;" : "";
+  const httpOnlyAttr = httpOnly ? " HttpOnly;" : "";
+  return `Path=/; Max-Age=${maxAge}; SameSite=Lax;${secure}${httpOnlyAttr}`;
 }
 
 export function createAuthCookieHeader(
@@ -300,25 +294,29 @@ export function createAuthCookieHeader(
   address?: string,
   verifiedDomain?: string
 ) {
-  const attrs = authCookieAttributes(maxAgeSeconds);
+  const attrs = cookieAttributes(maxAgeSeconds);
   const tokenCookie = `${MINIAPP_AUTH_COOKIE}=${encodeURIComponent(token)}; ${attrs}`;
   const normalizedDomain = normalizeMiniAppDomain(verifiedDomain ?? "");
   const domainCookie = normalizedDomain
     ? `${MINIAPP_AUTH_DOMAIN_COOKIE}=${encodeURIComponent(normalizedDomain)}; ${attrs}`
     : null;
+
   if (address && isAddress(address)) {
     const addressCookie = `${MINIAPP_AUTH_ADDRESS_COOKIE}=${encodeURIComponent(address)}; ${attrs}`;
     return [tokenCookie, addressCookie, domainCookie].filter(Boolean).join("\n");
   }
+
   return [tokenCookie, domainCookie].filter(Boolean).join("\n");
 }
 
+export function createNonceCookieHeader(nonce: string, maxAgeSeconds: number) {
+  const attrs = cookieAttributes(maxAgeSeconds);
+  return `${MINIAPP_AUTH_NONCE_COOKIE}=${encodeURIComponent(nonce)}; ${attrs}`;
+}
+
 export function clearAuthCookieHeader(): string[] {
-  const useNone = shouldUseSameSiteNoneForCookies();
-  const sameSite = useNone ? " SameSite=None;" : " SameSite=Lax;";
-  const secure = useNone || process.env.NODE_ENV === "production" ? " Secure;" : "";
-  const partitioned = useNone ? " Partitioned;" : "";
-  const attrs = `Path=/; HttpOnly; Max-Age=0;${sameSite}${secure}${partitioned}`;
+  const secure = shouldUseSecureCookies() ? " Secure;" : "";
+  const attrs = `Path=/; Max-Age=0; SameSite=Lax;${secure} HttpOnly;`;
   return [
     `${MINIAPP_AUTH_COOKIE}=; ${attrs}`,
     `${MINIAPP_AUTH_ADDRESS_COOKIE}=; ${attrs}`,
@@ -326,45 +324,31 @@ export function clearAuthCookieHeader(): string[] {
   ];
 }
 
-function getSiwfField(message: string, fieldName: string) {
-  const prefix = `${fieldName}: `;
-  const line = message
-    .split("\n")
-    .map((rawLine) => rawLine.trim())
-    .find((lineItem) => lineItem.toLowerCase().startsWith(prefix.toLowerCase()));
-
-  if (!line) {
-    return undefined;
-  }
-
-  return line.slice(prefix.length).trim();
+export function clearNonceCookieHeader() {
+  const secure = shouldUseSecureCookies() ? " Secure;" : "";
+  return `${MINIAPP_AUTH_NONCE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax;${secure} HttpOnly;`;
 }
 
 export function parseSiwfMessage(message: string): ParsedSiwfMessage | null {
-  const lines = message.split("\n");
-  if (lines.length < 2) {
+  try {
+    const parsed = parseRawSiweMessage(message);
+    if (!parsed.domain || !parsed.address) {
+      return null;
+    }
+
+    return {
+      domain: parsed.domain,
+      address: parsed.address,
+      nonce: parsed.nonce,
+      issuedAt: parsed.issuedAt?.toISOString(),
+      expirationTime: parsed.expirationTime?.toISOString(),
+      notBefore: parsed.notBefore?.toISOString(),
+      chainId: parsed.chainId,
+      uri: parsed.uri,
+      version: parsed.version,
+      statement: parsed.statement
+    };
+  } catch {
     return null;
   }
-
-  const domainSuffix = " wants you to sign in with your Ethereum account:";
-  const domainLine = lines[0]?.trim() ?? "";
-  if (!domainLine.endsWith(domainSuffix)) {
-    return null;
-  }
-
-  const domain = domainLine.slice(0, -domainSuffix.length).trim();
-  const address = lines[1]?.trim() ?? "";
-
-  if (!domain || !address) {
-    return null;
-  }
-
-  return {
-    domain,
-    address,
-    nonce: getSiwfField(message, "Nonce"),
-    issuedAt: getSiwfField(message, "Issued At"),
-    expirationTime: getSiwfField(message, "Expiration Time"),
-    notBefore: getSiwfField(message, "Not Before")
-  };
 }

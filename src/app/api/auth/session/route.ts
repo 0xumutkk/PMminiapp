@@ -97,7 +97,6 @@ export async function GET(request: Request) {
       {
         authenticated: true,
         user: {
-          fid: claims.fid,
           address: claims.address,
           expiresAt: new Date(claims.exp * 1_000).toISOString()
         },

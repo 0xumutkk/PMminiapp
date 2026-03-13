@@ -1,6 +1,13 @@
+import { generateSiweNonce } from "viem/siwe";
+import {
+  clearNonceCookieHeader,
+  createNonceCookieHeader
+} from "@/lib/security/miniapp-auth";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/security/rate-limit";
 
 export const runtime = "nodejs";
+
+const NONCE_MAX_AGE_SECONDS = 10 * 60;
 
 export async function POST(request: Request) {
   const rate = await checkRateLimit({
@@ -10,24 +17,16 @@ export async function POST(request: Request) {
     windowMs: 60_000
   });
 
+  const headers = new Headers(rateLimitHeaders(rate));
+  headers.set("Cache-Control", "no-store");
+
   if (!rate.ok) {
-    return Response.json({ error: "Too many requests" }, { status: 429, headers: rateLimitHeaders(rate) });
+    return Response.json({ error: "Too many requests" }, { status: 429, headers });
   }
 
-  const origin = process.env.FARCASTER_QUICK_AUTH_SERVER_ORIGIN ?? "https://auth.farcaster.xyz";
+  const nonce = generateSiweNonce();
+  headers.append("Set-Cookie", clearNonceCookieHeader());
+  headers.append("Set-Cookie", createNonceCookieHeader(nonce, NONCE_MAX_AGE_SECONDS));
 
-  const res = await fetch(`${origin}/nonce`, {
-    method: "POST"
-  });
-
-  if (!res.ok) {
-    return Response.json({ error: "Failed to get nonce" }, { status: 502 });
-  }
-
-  const data = (await res.json()) as { nonce?: string };
-  if (!data?.nonce) {
-    return Response.json({ error: "Invalid nonce response" }, { status: 502 });
-  }
-
-  return Response.json({ nonce: data.nonce }, { headers: rateLimitHeaders(rate) });
+  return Response.json({ nonce }, { headers });
 }

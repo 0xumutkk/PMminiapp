@@ -1,5 +1,5 @@
 export function shouldPreferWalletSendCalls(connectorId?: string | null) {
-  return connectorId === "farcaster" || connectorId === "farcaster-miniapp";
+  return connectorId === "baseAccount" || connectorId === "farcaster" || connectorId === "farcaster-miniapp";
 }
 
 export function shouldUseDirectTransactionSubmission(

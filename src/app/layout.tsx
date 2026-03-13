@@ -39,39 +39,9 @@ const appDescription =
   process.env.NEXT_PUBLIC_APP_DESCRIPTION ?? "Base Mini App for live prediction markets on Base";
 const ogTitle = process.env.NEXT_PUBLIC_OG_TITLE ?? appName;
 const ogDescription = process.env.NEXT_PUBLIC_OG_DESCRIPTION ?? appDescription;
+const baseAppId = process.env.NEXT_PUBLIC_BASE_APP_ID?.trim() || null;
 const iconUrl = "/icon.png";
 const ogImageUrl = "/og.png";
-
-const homeUrl = metadataBase.origin;
-const embedImageUrl = `${homeUrl}${ogImageUrl}`;
-const splashImageUrl = `${homeUrl}/splash.png`;
-const splashBackgroundColor = process.env.NEXT_PUBLIC_SPLASH_BG ?? "#0b1020";
-
-const fcMiniappEmbed = {
-  version: "1",
-  imageUrl: embedImageUrl,
-  button: {
-    title: "Launch App",
-    action: {
-      type: "launch_miniapp",
-      url: homeUrl,
-      name: appName,
-      splashImageUrl,
-      splashBackgroundColor
-    }
-  }
-};
-
-const fcFrameEmbed = {
-  ...fcMiniappEmbed,
-  button: {
-    ...fcMiniappEmbed.button,
-    action: {
-      ...fcMiniappEmbed.button.action,
-      type: "launch_frame"
-    }
-  }
-};
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -106,19 +76,13 @@ export const metadata: Metadata = {
     description: ogDescription,
     images: [ogImageUrl]
   },
-  other: {
-    "fc:miniapp": JSON.stringify(fcMiniappEmbed),
-    "fc:frame": JSON.stringify(fcFrameEmbed),
-    "base:app_id": "699d5dca4fa7a77f84a9ffec"
-  }
+  other: baseAppId ? { "base:app_id": baseAppId } : undefined
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <head>
-        <meta name="base:app_id" content="699d5dca4fa7a77f84a9ffec" />
-      </head>
+      <head>{baseAppId ? <meta name="base:app_id" content={baseAppId} /> : null}</head>
       <body>
         <Script id="miniapp-runtime-guards" strategy="beforeInteractive">
           {`

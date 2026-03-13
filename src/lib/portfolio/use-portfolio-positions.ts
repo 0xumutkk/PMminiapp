@@ -18,6 +18,18 @@ export const PORTFOLIO_POSITIONS_STALE_TIME_MS = 15_000;
 const BACKGROUND_FULL_SYNC_INTERVAL_MS = 60_000;
 const BACKGROUND_CRITICAL_SYNC_INTERVAL_MS = 20_000;
 
+export type PortfolioPositionsResponseMeta = {
+  cache: string | null;
+  requestId: string | null;
+  source: string | null;
+  status: number;
+};
+
+type PortfolioPositionsFetchResult = {
+  meta: PortfolioPositionsResponseMeta;
+  snapshot: PortfolioPositionsSnapshot;
+};
+
 export function getPortfolioPositionsQueryKey(account: string | null) {
   return ["portfolio-positions", account] as const;
 }
@@ -29,7 +41,7 @@ export async function fetchPortfolioPositions(
     fresh?: boolean;
     critical?: boolean;
   } = {}
-): Promise<PortfolioPositionsSnapshot> {
+): Promise<PortfolioPositionsFetchResult> {
   const params = new URLSearchParams({ account });
   if (options.fresh) {
     params.set("fresh", "1");
@@ -53,7 +65,15 @@ export async function fetchPortfolioPositions(
     throw new Error(message);
   }
 
-  return body as PortfolioPositionsSnapshot;
+  return {
+    meta: {
+      cache: response.headers.get("X-Positions-Cache"),
+      requestId: response.headers.get("X-Request-Id"),
+      source: response.headers.get("X-Positions-Source"),
+      status: response.status
+    },
+    snapshot: body as PortfolioPositionsSnapshot
+  };
 }
 
 export function usePortfolioPositions() {
@@ -84,12 +104,12 @@ export function usePortfolioPositions() {
     }
 
     try {
-      const snapshot = await fetchPortfolioPositions(account, getAuthHeaders(), { fresh: true });
-      queryClient.setQueryData(queryKey, snapshot);
-      return snapshot;
+      const result = await fetchPortfolioPositions(account, getAuthHeaders(), { fresh: true });
+      queryClient.setQueryData(queryKey, result);
+      return result.snapshot;
     } catch (error) {
       console.warn("[Portfolio Positions] Fresh refetch failed:", error);
-      return (queryClient.getQueryData(queryKey) as PortfolioPositionsSnapshot | undefined) ?? null;
+      return (queryClient.getQueryData(queryKey) as PortfolioPositionsFetchResult | undefined)?.snapshot ?? null;
     }
   }, [account, enabled, getAuthHeaders, queryClient, queryKey]);
 
@@ -99,15 +119,15 @@ export function usePortfolioPositions() {
     }
 
     try {
-      const snapshot = await fetchPortfolioPositions(account, getAuthHeaders(), {
+      const result = await fetchPortfolioPositions(account, getAuthHeaders(), {
         fresh: true,
         critical: true
       });
-      queryClient.setQueryData(queryKey, snapshot);
-      return snapshot;
+      queryClient.setQueryData(queryKey, result);
+      return result.snapshot;
     } catch (error) {
       console.warn("[Portfolio Positions] Critical refetch failed:", error);
-      return (queryClient.getQueryData(queryKey) as PortfolioPositionsSnapshot | undefined) ?? null;
+      return (queryClient.getQueryData(queryKey) as PortfolioPositionsFetchResult | undefined)?.snapshot ?? null;
     }
   }, [account, enabled, getAuthHeaders, queryClient, queryKey]);
 
@@ -179,23 +199,49 @@ export function usePortfolioPositions() {
 
   const mergedSnapshot = useMemo(() => {
     if (!enabled || !account) {
-      return query.data ?? null;
+      return query.data?.snapshot ?? null;
     }
 
     const baseSnapshot =
-      query.data ??
+      query.data?.snapshot ??
       createOptimisticPortfolioSnapshot(account as `0x${string}`);
 
     return mergeOptimisticPortfolioBuys(baseSnapshot, optimisticBuys);
-  }, [account, enabled, optimisticBuys, query.data]);
+  }, [account, enabled, optimisticBuys, query.data?.snapshot]);
 
   const hasOptimisticPositions =
-    !query.data &&
+    !query.data?.snapshot &&
     !!mergedSnapshot &&
     (mergedSnapshot.active.length > 0 || mergedSnapshot.settled.length > 0);
 
+  const debug = useMemo(() => {
+    const settled = mergedSnapshot?.settled ?? [];
+    const closed = settled.filter((item) => item.isSold === true || !item.claimable);
+    const claimable = settled.filter((item) => item.claimable && item.isSold !== true);
+
+    return {
+      activeCount: mergedSnapshot?.active.length ?? 0,
+      cache: query.data?.meta.cache ?? null,
+      claimableCount: claimable.length,
+      closedCount: closed.length,
+      historyPreview: closed.slice(0, 12).map((item) => ({
+        activityAt: item.activityAt ?? null,
+        id: item.id,
+        isRedeemed: item.isRedeemed === true,
+        isSold: item.isSold === true,
+        marketTitle: item.marketTitle,
+        marketValueUsdc: item.marketValueUsdc
+      })),
+      requestId: query.data?.meta.requestId ?? null,
+      source: query.data?.meta.source ?? null,
+      status: query.data?.meta.status ?? null,
+      settledCount: settled.length
+    };
+  }, [mergedSnapshot, query.data?.meta]);
+
   return {
     account,
+    debug,
     isAuthenticated,
     snapshot: mergedSnapshot,
     loading: (query.isLoading || (query.isFetching && !query.data)) && !hasOptimisticPositions,

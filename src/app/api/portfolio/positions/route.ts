@@ -2575,6 +2575,19 @@ function hasRenderableOnchainPositions(
   return snapshot.active.length > 0 || snapshot.settled.length > 0;
 }
 
+function shouldBackfillPublicHistory(
+  snapshot: PortfolioPositionsSnapshot | null | undefined
+) {
+  return Boolean(snapshot && snapshot.active.length > 0 && snapshot.settled.length === 0);
+}
+
+function shouldServePublicFastPath(
+  snapshot: PortfolioPositionsSnapshot | null | undefined,
+  forceFresh: boolean
+) {
+  return !forceFresh && hasRenderableOnchainPositions(snapshot) && !shouldBackfillPublicHistory(snapshot);
+}
+
 function collectOnchainDiscoveryAddresses(
   historyAddresses: string[] = [],
   ...snapshots: Array<PortfolioPositionsSnapshot | null | undefined>
@@ -3397,19 +3410,18 @@ export async function GET(request: Request) {
       console.warn(`[Positions API] Failed to fetch public portfolio for cost basis:`, err);
       return null;
     });
-    const hasPublicPositions =
-      rawPublicPortfolio !== null &&
-      (rawPublicPortfolio.active.length > 0 || rawPublicPortfolio.settled.length > 0);
+    const hasPublicPositions = hasRenderableOnchainPositions(rawPublicPortfolio);
+    const shouldBackfillSettledHistory = shouldBackfillPublicHistory(rawPublicPortfolio);
 
-    if (!forceFresh && rawPublicPortfolio && hasPublicPositions) {
+    if (rawPublicPortfolio && shouldServePublicFastPath(rawPublicPortfolio, forceFresh)) {
       headers.set("X-Positions-Source", "public-fast-path");
       return respondWithSnapshot(rawPublicPortfolio);
     }
 
     const shouldAttemptBlockscoutHistoryBackfill =
-      !criticalOnly &&
       !hasPublicPositions ||
-      (!criticalOnly && forceFresh && rawPublicPortfolio !== null && rawPublicPortfolio.settled.length === 0);
+      shouldBackfillSettledHistory ||
+      (forceFresh && rawPublicPortfolio !== null && rawPublicPortfolio.settled.length === 0);
 
     let blockscoutHistorySnapshot: PortfolioPositionsSnapshot | null = null;
     if (shouldAttemptBlockscoutHistoryBackfill) {
@@ -3423,6 +3435,20 @@ export async function GET(request: Request) {
       } catch (error) {
         console.warn("[Positions API] Blockscout history snapshot failed:", error);
       }
+    }
+
+    if (!criticalOnly && rawPublicPortfolio && hasPublicPositions && !forceFresh) {
+      const fastSnapshot = mergeHistoricalSettledPositions(
+        rawPublicPortfolio,
+        account as `0x${string}`,
+        blockscoutHistorySnapshot?.settled ?? []
+      );
+
+      headers.set(
+        "X-Positions-Source",
+        (blockscoutHistorySnapshot?.settled.length ?? 0) > 0 ? "public+blockscout" : "public-fast-path"
+      );
+      return respondWithSnapshot(fastSnapshot);
     }
 
     let lightOnchainSnapshot: PortfolioPositionsSnapshot | null = null;
@@ -3496,14 +3522,18 @@ export async function GET(request: Request) {
         }
       }
 
+      const criticalPublicSnapshot = mergeHistoricalSettledPositions(
+        enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, criticalMarkets),
+        account as `0x${string}`,
+        blockscoutHistorySnapshot?.settled ?? []
+      );
       const criticalBaseSnapshot = criticalOnchainSnapshot
         ? mergePortfolioSnapshots(
             account as `0x${string}`,
-            enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, criticalMarkets),
+            criticalPublicSnapshot,
             criticalOnchainSnapshot
           )
-        : (enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, criticalMarkets) ??
-          createPortfolioSnapshot(account as `0x${string}`));
+        : criticalPublicSnapshot;
 
       const criticalSnapshot = reconcileClaimableSettledWithOnchain(
         criticalBaseSnapshot,
@@ -3698,6 +3728,8 @@ declare global {
         reconcileClaimableSettledWithOnchain: typeof reconcileClaimableSettledWithOnchain;
         sortSnapshotByStoredRecency: typeof sortSnapshotByStoredRecency;
         hasRenderableOnchainPositions: typeof hasRenderableOnchainPositions;
+        shouldBackfillPublicHistory: typeof shouldBackfillPublicHistory;
+        shouldServePublicFastPath: typeof shouldServePublicFastPath;
         collectOnchainDiscoveryAddresses: typeof collectOnchainDiscoveryAddresses;
       }
     | undefined;
@@ -3711,6 +3743,8 @@ if (process.env.NODE_ENV === "test") {
     reconcileClaimableSettledWithOnchain,
     sortSnapshotByStoredRecency,
     hasRenderableOnchainPositions,
+    shouldBackfillPublicHistory,
+    shouldServePublicFastPath,
     collectOnchainDiscoveryAddresses
   };
 }

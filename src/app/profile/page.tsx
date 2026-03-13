@@ -10,6 +10,7 @@ import { useAccount, useBalance } from "wagmi";
 import React, { Suspense } from "react";
 
 const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
+const SHOW_PORTFOLIO_DEBUG = process.env.NODE_ENV !== "production";
 
 function formatUsd(raw: string | number) {
   const value = Number(raw);
@@ -23,7 +24,7 @@ function formatUsd(raw: string | number) {
 
 function ProfileContent() {
   const [subView, setSubView] = React.useState<"active" | "closed" | "redeem">("active");
-  const { snapshot, loading: positionsLoading, refetch: refetchPositions } = usePortfolioPositions();
+  const { debug, snapshot, loading: positionsLoading, refetch: refetchPositions } = usePortfolioPositions();
   const { address } = useAccount();
 
   const { data: usdcBalance, isLoading: balanceLoading, refetch: refetchBalance } = useBalance({
@@ -114,6 +115,7 @@ function ProfileContent() {
   const claimableCount = snapshot?.settled.filter(s => s.claimable).length ?? 0;
   const closedCount = snapshot?.settled.filter(s => !s.claimable).length ?? 0;
   const activeCount = filterVisibleActivePositions(snapshot?.active ?? [], snapshot?.settled ?? []).length;
+  const hasEnoughHistoryCards = closedCount > 10;
 
   return (
     <div
@@ -250,6 +252,96 @@ function ProfileContent() {
           </div>
         </div>
       </div>
+
+      {SHOW_PORTFOLIO_DEBUG && (
+        <section
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            marginBottom: '12px',
+            padding: '14px 16px',
+            borderRadius: '24px',
+            border: '1px solid rgba(255,255,255,0.1)',
+            background: 'rgba(255,255,255,0.04)'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
+            <span style={{ fontSize: '12px', fontWeight: '800', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.72)' }}>
+              PORTFOLIO DEBUG
+            </span>
+            <span
+              style={{
+                borderRadius: '999px',
+                padding: '4px 10px',
+                fontSize: '12px',
+                fontWeight: '800',
+                background: hasEnoughHistoryCards ? 'rgba(11,213,45,0.14)' : 'rgba(255,166,0,0.12)',
+                color: hasEnoughHistoryCards ? '#0bd52d' : '#ffb020',
+                border: `1px solid ${hasEnoughHistoryCards ? 'rgba(11,213,45,0.3)' : 'rgba(255,176,32,0.28)'}`
+              }}
+            >
+              History cards {closedCount} {hasEnoughHistoryCards ? ">= 10" : "< 10"}
+            </span>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' }}>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.68)' }}>
+              Source: <span style={{ color: '#fff' }}>{debug.source ?? 'unknown'}</span>
+            </div>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.68)' }}>
+              Cache: <span style={{ color: '#fff' }}>{debug.cache ?? 'none'}</span>
+            </div>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.68)' }}>
+              Active: <span style={{ color: '#fff' }}>{debug.activeCount}</span>
+            </div>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.68)' }}>
+              Settled: <span style={{ color: '#fff' }}>{debug.settledCount}</span>
+            </div>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.68)' }}>
+              Claimable: <span style={{ color: '#fff' }}>{debug.claimableCount}</span>
+            </div>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.68)' }}>
+              Closed: <span style={{ color: '#fff' }}>{debug.closedCount}</span>
+            </div>
+          </div>
+
+          <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.5)' }}>
+            Request ID: {debug.requestId ?? 'n/a'}{debug.status ? ` · HTTP ${debug.status}` : ''}
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <span style={{ fontSize: '12px', fontWeight: '700', color: 'rgba(255,255,255,0.82)' }}>
+              Closed history preview
+            </span>
+            {debug.historyPreview.length > 0 ? (
+              debug.historyPreview.map((item, index) => (
+                <div
+                  key={item.id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: '12px',
+                    fontSize: '12px',
+                    color: 'rgba(255,255,255,0.68)'
+                  }}
+                >
+                  <span style={{ color: '#fff', flex: 1 }}>
+                    {index + 1}. {item.marketTitle}
+                  </span>
+                  <span style={{ whiteSpace: 'nowrap' }}>
+                    {item.isRedeemed ? 'redeemed' : item.isSold ? 'sold' : 'closed'} · {formatUsd(item.marketValueUsdc)}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.48)' }}>
+                Closed history preview is empty.
+              </span>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* Nav Tabs (2+1 kolumlu) */}
       <div style={{ display: 'flex', gap: '10px', alignItems: 'stretch' }}>

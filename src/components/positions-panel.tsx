@@ -14,6 +14,7 @@ import { isAddress } from "viem";
 
 const REFRESH_EVENT_NAME = "positions:refresh";
 const DEFAULT_SELL_MAX_SLIPPAGE_BPS = 200;
+const SHOULD_REPORT_PORTFOLIO_DEBUG = process.env.NODE_ENV !== "production";
 
 type ActivePosition = PortfolioPositionsSnapshot["active"][number];
 
@@ -114,6 +115,41 @@ export function PositionsPanel({ filter = "active" }: PositionsPanelProps) {
     () => snapshot?.settled.filter((item) => item.claimable && item.isSold !== true) ?? [],
     [snapshot?.settled]
   );
+
+  useEffect(() => {
+    if (
+      !SHOULD_REPORT_PORTFOLIO_DEBUG ||
+      filter !== "closed" ||
+      !isAuthenticated ||
+      !account
+    ) {
+      return;
+    }
+
+    void fetch("/api/debug/portfolio-ui", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        account,
+        closedCount: closedPositions.length,
+        filter,
+        historyPreview: closedPositions.slice(0, 12).map((position) => ({
+          activityAt: position.activityAt ?? null,
+          id: position.id,
+          isRedeemed: position.isRedeemed === true,
+          isSold: position.isSold === true,
+          marketTitle: position.marketTitle,
+          marketValueUsdc: position.marketValueUsdc
+        })),
+        settledCount: snapshot?.settled.length ?? 0,
+        source: "positions-panel"
+      })
+    }).catch((error) => {
+      console.warn("[Portfolio UI Debug] Failed to report history panel state:", error);
+    });
+  }, [account, closedPositions, filter, isAuthenticated, snapshot?.settled.length]);
 
   useEffect(() => {
     if (!loading && (activePositions.length > 0 || smallPositions.length > 0) && typeof window !== 'undefined') {

@@ -36,6 +36,13 @@ type TestHelpers = {
   hasRenderableOnchainPositions: (
     snapshot: PortfolioPositionsSnapshot | null | undefined
   ) => boolean;
+  shouldBackfillPublicHistory: (
+    snapshot: PortfolioPositionsSnapshot | null | undefined
+  ) => boolean;
+  shouldServePublicFastPath: (
+    snapshot: PortfolioPositionsSnapshot | null | undefined,
+    forceFresh: boolean
+  ) => boolean;
   collectOnchainDiscoveryAddresses: (
     historyAddresses?: string[],
     ...snapshots: Array<PortfolioPositionsSnapshot | null | undefined>
@@ -96,6 +103,22 @@ function buildSnapshot(settled: TrackedPosition[]): PortfolioPositionsSnapshot {
         .toFixed(6)
         .replace(/\.?0+$/, "") || "0"
     }
+  };
+}
+
+function buildActivePosition(overrides: Partial<TrackedPosition> = {}): TrackedPosition {
+  return {
+    ...buildSettledPosition({
+      id: `${MARKET_ID}:no`,
+      side: "no",
+      status: "active",
+      claimable: false,
+      tokenBalance: "0.04",
+      marketValueUsdc: "0.04",
+      unrealizedPnlUsdc: "0",
+      realizedPnlUsdc: "0"
+    }),
+    ...overrides
   };
 }
 
@@ -272,6 +295,32 @@ test("hasRenderableOnchainPositions treats claimable-only settled snapshots as r
   assert.equal(testHelpers.hasRenderableOnchainPositions(claimableSnapshot), true);
   assert.equal(testHelpers.hasRenderableOnchainPositions(buildSnapshot([])), false);
   assert.equal(testHelpers.hasRenderableOnchainPositions(null), false);
+});
+
+test("shouldBackfillPublicHistory detects active-only public snapshots", () => {
+  const activeOnlySnapshot: PortfolioPositionsSnapshot = {
+    ...buildSnapshot([]),
+    active: [buildActivePosition()]
+  };
+
+  assert.equal(testHelpers.shouldBackfillPublicHistory(activeOnlySnapshot), true);
+  assert.equal(testHelpers.shouldServePublicFastPath(activeOnlySnapshot, false), false);
+});
+
+test("shouldServePublicFastPath stays enabled when public snapshot already has settled rows", () => {
+  const settledSnapshot: PortfolioPositionsSnapshot = {
+    ...buildSnapshot([
+      buildSettledPosition({
+        id: `${MARKET_ID}:yes:exit`,
+        isSold: true
+      })
+    ]),
+    active: [buildActivePosition()]
+  };
+
+  assert.equal(testHelpers.shouldBackfillPublicHistory(settledSnapshot), false);
+  assert.equal(testHelpers.shouldServePublicFastPath(settledSnapshot, false), true);
+  assert.equal(testHelpers.shouldServePublicFastPath(settledSnapshot, true), false);
 });
 
 test("collectOnchainDiscoveryAddresses includes address-backed markets from cached and supplemental snapshots", () => {

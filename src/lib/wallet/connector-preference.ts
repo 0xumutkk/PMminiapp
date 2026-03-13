@@ -15,6 +15,31 @@ type WalletWindow = Window & {
   __swipenMiniAppEthereumProvider?: unknown;
 };
 
+const SERVER_WALLET_RUNTIME_ENVIRONMENT: WalletRuntimeEnvironment = Object.freeze({
+  hasInjectedProvider: false,
+  hasMiniAppProvider: false,
+  hasWindowEthereum: false,
+  isFramed: false
+});
+
+let cachedWalletRuntimeEnvironment: WalletRuntimeEnvironment = SERVER_WALLET_RUNTIME_ENVIRONMENT;
+
+function toStableWalletRuntimeEnvironment(next: WalletRuntimeEnvironment) {
+  const previous = cachedWalletRuntimeEnvironment;
+  if (
+    previous.hasInjectedProvider === next.hasInjectedProvider &&
+    previous.hasMiniAppProvider === next.hasMiniAppProvider &&
+    previous.hasWindowEthereum === next.hasWindowEthereum &&
+    previous.isFramed === next.isFramed
+  ) {
+    return previous;
+  }
+
+  const stable = Object.freeze(next);
+  cachedWalletRuntimeEnvironment = stable;
+  return stable;
+}
+
 function errorMessage(error: unknown) {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -33,12 +58,7 @@ function errorMessage(error: unknown) {
 
 export function getWalletRuntimeEnvironment(): WalletRuntimeEnvironment {
   if (typeof window === "undefined") {
-    return {
-      hasInjectedProvider: false,
-      hasMiniAppProvider: false,
-      hasWindowEthereum: false,
-      isFramed: false
-    };
+    return SERVER_WALLET_RUNTIME_ENVIRONMENT;
   }
 
   const walletWindow = window as WalletWindow;
@@ -52,12 +72,12 @@ export function getWalletRuntimeEnvironment(): WalletRuntimeEnvironment {
     isFramed = true;
   }
 
-  return {
+  return toStableWalletRuntimeEnvironment({
     hasInjectedProvider: hasWindowEthereum || hasMiniAppProvider,
     hasMiniAppProvider,
     hasWindowEthereum,
     isFramed
-  };
+  });
 }
 
 function isBaseAccountConnector(connector: ConnectorLike) {

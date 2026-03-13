@@ -58,9 +58,18 @@ export function isCrossOriginFrameConnectError(error: unknown) {
   );
 }
 
+export function isInjectedNotFoundError(error: unknown) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("provider not found") || message.includes("no provider");
+}
+
 export function formatWalletConnectError(error: unknown) {
   if (isCrossOriginFrameConnectError(error)) {
     return "This host blocks Base Account in an iframe. Retry with your injected wallet.";
+  }
+
+  if (isInjectedNotFoundError(error)) {
+    return "No wallet found. Install Coinbase Wallet or MetaMask, or try Base Account.";
   }
 
   const message = errorMessage(error).trim();
@@ -91,17 +100,23 @@ export function resolveFallbackConnector<T extends ConnectorLike>(
   error: unknown,
   environment: WalletRuntimeEnvironment = getWalletRuntimeEnvironment()
 ) {
-  if (attemptedConnectorId !== "baseAccount") {
-    return undefined;
+  if (attemptedConnectorId === "baseAccount") {
+    if (!environment.hasInjectedProvider && !environment.isFramed) {
+      return undefined;
+    }
+
+    if (!isCrossOriginFrameConnectError(error)) {
+      return undefined;
+    }
+
+    return connectors.find((connector) => connector.id === "injected");
   }
 
-  if (!environment.hasInjectedProvider && !environment.isFramed) {
-    return undefined;
+  if (attemptedConnectorId === "injected") {
+    if (isInjectedNotFoundError(error)) {
+      return connectors.find((connector) => connector.id === "baseAccount");
+    }
   }
 
-  if (!isCrossOriginFrameConnectError(error)) {
-    return undefined;
-  }
-
-  return connectors.find((connector) => connector.id === "injected");
+  return undefined;
 }

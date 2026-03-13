@@ -7,6 +7,7 @@ import { Market } from "@/lib/market-types";
 import { useTradeExecutor } from "@/lib/trade/use-trade-executor";
 import { useMiniAppAuth } from "@/components/miniapp-auth-provider";
 import Link from "next/link";
+import Image from "next/image";
 
 import { usePortfolioPositions } from "@/lib/portfolio/use-portfolio-positions";
 import { useTokenPrice } from "@/lib/crypto-price";
@@ -318,16 +319,18 @@ export function MarketCard({ market, isActive }: { market: Market; isActive: boo
           background: `linear-gradient(135deg, ${vibe.colors[0]} 0%, ${vibe.colors[1]} 50%, ${vibe.colors[2]} 100%)`,
         }}
       >
-        <img
+        <Image
           src={vibe.bgImageUrl}
           className="market-card__category-bg"
           alt=""
-          loading="lazy"
+          fill
+          priority={isActive}
           onLoad={() => setBgLoaded(true)}
           style={{
             opacity: bgLoaded ? 1 : 0,
             transition: 'opacity 0.8s ease-in-out',
-            filter: 'none', // Strictly no filters as requested
+            filter: 'none',
+            objectFit: 'cover',
           }}
         />
       </div>

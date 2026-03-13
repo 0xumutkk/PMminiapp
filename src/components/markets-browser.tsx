@@ -2,6 +2,7 @@
 
 import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import type { MarketSnapshot } from "@/lib/market-types";
 import {
   CATEGORY_FILTER_OPTIONS,
@@ -214,13 +215,15 @@ export function MarketsBrowser() {
                 >
                   <div className="explore-card__inset-shadow" />
                   <div className="explore-card__header">
-                    <img
-                      src={market.imageUrl || "/icon.png"}
-                      className="explore-card__token"
-                      alt=""
-                      loading="lazy"
-                      decoding="async"
-                    />
+                    <div style={{ position: 'relative', width: '32px', height: '32px', flexShrink: 0 }}>
+                      <Image
+                        src={market.imageUrl || "/icon.png"}
+                        className="explore-card__token"
+                        alt=""
+                        fill
+                        sizes="32px"
+                      />
+                    </div>
                     <div className="explore-card__title-row">
                       <h3 className="explore-card__title">{market.title}</h3>
                       <span className="explore-card__prob">{formatPercent(market.yesPrice)}</span>

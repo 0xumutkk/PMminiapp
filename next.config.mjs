@@ -8,6 +8,13 @@ const nextConfig = {
   experimental: {
     optimizePackageImports: ["wagmi", "viem", "@tanstack/react-query"],
   },
+  images: {
+    remotePatterns: [
+      { protocol: "https", hostname: "*.googleusercontent.com" },
+      { protocol: "https", hostname: "*.limitless.exchange" },
+      { protocol: "https", hostname: "imagedelivery.net" }
+    ]
+  },
   turbopack: {
     resolveAlias: {
       "@react-native-async-storage/async-storage": {

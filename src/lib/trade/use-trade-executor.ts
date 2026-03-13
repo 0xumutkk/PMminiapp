@@ -475,7 +475,7 @@ export function useTradeExecutor() {
         pendingTrade: null
       }));
     }
-  }, [address, applyOptimisticPortfolioUpdate, callsStatus.data, confirmationClient, state.pendingCalls, state.pendingTrade]);
+  }, [address, applyOptimisticPortfolioUpdate, callsStatus.data, confirmationClient, persistConfirmedTrade, queryClient, state.pendingCalls, state.pendingTrade]);
 
   const executeIntent = useCallback(
     async (params: ExecuteIntentParams) => {

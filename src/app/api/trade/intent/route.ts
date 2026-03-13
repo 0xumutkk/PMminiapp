@@ -2,6 +2,7 @@ import { buildTradeIntent } from "@/lib/trade/build-intent";
 import * as portfolioPositionsRoute from "@/app/api/portfolio/positions/route";
 import { getMarketIndexer } from "@/lib/indexer";
 import { Market } from "@/lib/market-types";
+import { appendCachedDiscoveryAddresses } from "@/lib/portfolio/discovery-cache";
 import {
   fetchPublicPortfolioPositions,
   type PortfolioPositionsSnapshot
@@ -28,6 +29,7 @@ import {
 } from "@/lib/security/miniapp-auth";
 import { getRequestId } from "@/lib/security/request-context";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/security/rate-limit";
+import { getSecurityRedisClient } from "@/lib/security/redis-store";
 import { base } from "viem/chains";
 import { createPublicClient, formatUnits, http, isAddress, parseAbi, parseUnits } from "viem";
 
@@ -339,6 +341,38 @@ function buildFallbackAmmMarkets(
   }
 
   return markets;
+}
+
+function normalizeDiscoveryAddressCandidate(value: string | undefined | null) {
+  return typeof value === "string" && isAddress(value) ? (value.toLowerCase() as `0x${string}`) : null;
+}
+
+async function persistDiscoveryAddressesForWallet(
+  walletAddress: `0x${string}`,
+  candidates: Array<string | undefined | null>
+) {
+  const addresses = Array.from(
+    new Set(
+      candidates
+        .map(normalizeDiscoveryAddressCandidate)
+        .filter((value): value is `0x${string}` => value !== null)
+    )
+  );
+
+  if (addresses.length === 0) {
+    return;
+  }
+
+  try {
+    const redis = await getSecurityRedisClient();
+    await appendCachedDiscoveryAddresses(walletAddress, addresses, redis);
+  } catch (error) {
+    logEvent("warn", "trade_intent_discovery_cache_write_failed", {
+      walletAddress,
+      addresses,
+      message: error instanceof Error ? error.message : "unknown"
+    });
+  }
 }
 
 function isPortfolioSnapshot(value: unknown): value is PortfolioPositionsSnapshot {
@@ -677,6 +711,12 @@ export async function POST(request: Request) {
     let intentMarketId = marketId;
     let conditionalTokensContract: `0x${string}` | undefined;
     let conditionId: `0x${string}` | undefined;
+    const discoveryAddressCandidates: Array<string | undefined> = [];
+    const registerDiscoveryAddress = (value: string | undefined | null) => {
+      if (value && isAddress(value)) {
+        discoveryAddressCandidates.push(value);
+      }
+    };
 
     if (action === "buy") {
       if (!market) {
@@ -742,6 +782,8 @@ export async function POST(request: Request) {
         market.tradeVenue?.venueExchange ??
         market.tradeVenue?.venueAdapter ??
         process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
+      registerDiscoveryAddress(market.tradeVenue?.venueExchange);
+      registerDiscoveryAddress(isAddress(market.id) ? market.id : undefined);
       functionSignature = market.tradeVenue?.functionSignature;
       argMap = market.tradeVenue?.argMap;
       executionPrice = side === "yes" ? market.yesPrice : market.noPrice;
@@ -824,6 +866,8 @@ export async function POST(request: Request) {
           process.env.LIMITLESS_SELL_CONTRACT_ADDRESS ??
           process.env.LIMITLESS_TRADE_CONTRACT_ADDRESS;
       }
+      registerDiscoveryAddress(activePosition.marketId);
+      registerDiscoveryAddress(market?.tradeVenue?.venueExchange);
 
       // AMM FPMM sell: sell(returnAmount, outcomeIndex, maxOutcomeTokensToSell)
       functionSignature =
@@ -950,6 +994,8 @@ export async function POST(request: Request) {
       } else if (market?.tradeVenue?.venueExchange && isAddress(market.tradeVenue.venueExchange)) {
         fpmmAddr = market.tradeVenue.venueExchange as `0x${string}`;
       }
+      registerDiscoveryAddress(claimablePosition.marketId);
+      registerDiscoveryAddress(market?.tradeVenue?.venueExchange);
 
       tradeContract =
         claimablePosition.conditionalTokensContract ??
@@ -971,6 +1017,7 @@ export async function POST(request: Request) {
       if (!fpmmAddr && marketMetadata?.fpmmAddress) {
         fpmmAddr = marketMetadata.fpmmAddress;
       }
+      registerDiscoveryAddress(marketMetadata?.fpmmAddress);
       if (!tradeContract && marketMetadata?.conditionalTokensContract) {
         tradeContract = marketMetadata.conditionalTokensContract;
         conditionalTokensContract = marketMetadata.conditionalTokensContract;
@@ -988,6 +1035,8 @@ export async function POST(request: Request) {
           conditionId = fpmmMetadata.conditionId;
         }
       }
+
+      registerDiscoveryAddress(fpmmAddr);
 
       if (!tradeContract || !conditionId) {
         return Response.json(
@@ -1070,6 +1119,11 @@ export async function POST(request: Request) {
     });
 
     const response: TradeIntentResponse = intent;
+
+    await persistDiscoveryAddressesForWallet(
+      verifiedWalletAddress as `0x${string}`,
+      discoveryAddressCandidates
+    );
 
     return Response.json(response, {
       status: 200,

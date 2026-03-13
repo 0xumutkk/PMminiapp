@@ -15,7 +15,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAccount } from "wagmi";
 
 export const PORTFOLIO_POSITIONS_STALE_TIME_MS = 15_000;
-const BACKGROUND_FRESH_SYNC_INTERVAL_MS = 60_000;
+const BACKGROUND_FULL_SYNC_INTERVAL_MS = 60_000;
+const BACKGROUND_CRITICAL_SYNC_INTERVAL_MS = 20_000;
 
 export function getPortfolioPositionsQueryKey(account: string | null) {
   return ["portfolio-positions", account] as const;
@@ -24,11 +25,17 @@ export function getPortfolioPositionsQueryKey(account: string | null) {
 export async function fetchPortfolioPositions(
   account: string,
   authHeaders: Record<string, string>,
-  fresh = false
+  options: {
+    fresh?: boolean;
+    critical?: boolean;
+  } = {}
 ): Promise<PortfolioPositionsSnapshot> {
   const params = new URLSearchParams({ account });
-  if (fresh) {
+  if (options.fresh) {
     params.set("fresh", "1");
+  }
+  if (options.critical) {
+    params.set("critical", "1");
   }
 
   const response = await fetch(`/api/portfolio/positions?${params.toString()}`, {
@@ -53,7 +60,8 @@ export function usePortfolioPositions() {
   const { address } = useAccount();
   const { user, isAuthenticated, getAuthHeaders } = useMiniAppAuth();
   const queryClient = useQueryClient();
-  const backgroundFreshSyncRef = useRef<Map<string, number>>(new Map());
+  const backgroundFullSyncRef = useRef<Map<string, number>>(new Map());
+  const backgroundCriticalSyncRef = useRef<Map<string, number>>(new Map());
   const [optimisticBuys, setOptimisticBuys] = useState<StoredOptimisticPortfolioBuy[]>([]);
   // Portfolio positions belong to the connected wallet, not the auth identity.
   const account = address ?? user?.address ?? null;
@@ -70,13 +78,13 @@ export function usePortfolioPositions() {
     retry: 0
   });
 
-  const refetch = useCallback(async () => {
+  const refetchFull = useCallback(async () => {
     if (!enabled || !account) {
       return null;
     }
 
     try {
-      const snapshot = await fetchPortfolioPositions(account, getAuthHeaders(), true);
+      const snapshot = await fetchPortfolioPositions(account, getAuthHeaders(), { fresh: true });
       queryClient.setQueryData(queryKey, snapshot);
       return snapshot;
     } catch (error) {
@@ -84,6 +92,30 @@ export function usePortfolioPositions() {
       return (queryClient.getQueryData(queryKey) as PortfolioPositionsSnapshot | undefined) ?? null;
     }
   }, [account, enabled, getAuthHeaders, queryClient, queryKey]);
+
+  const refetchCritical = useCallback(async () => {
+    if (!enabled || !account) {
+      return null;
+    }
+
+    try {
+      const snapshot = await fetchPortfolioPositions(account, getAuthHeaders(), {
+        fresh: true,
+        critical: true
+      });
+      queryClient.setQueryData(queryKey, snapshot);
+      return snapshot;
+    } catch (error) {
+      console.warn("[Portfolio Positions] Critical refetch failed:", error);
+      return (queryClient.getQueryData(queryKey) as PortfolioPositionsSnapshot | undefined) ?? null;
+    }
+  }, [account, enabled, getAuthHeaders, queryClient, queryKey]);
+
+  const refetch = useCallback(async () => {
+    const criticalSnapshot = await refetchCritical();
+    void refetchFull();
+    return criticalSnapshot;
+  }, [refetchCritical, refetchFull]);
 
   useEffect(() => {
     if (!enabled || !account) {
@@ -95,14 +127,36 @@ export function usePortfolioPositions() {
     }
 
     const normalizedAccount = account.toLowerCase();
-    const lastFreshSyncAt = backgroundFreshSyncRef.current.get(normalizedAccount) ?? 0;
-    if (Date.now() - lastFreshSyncAt < BACKGROUND_FRESH_SYNC_INTERVAL_MS) {
+    const lastCriticalSyncAt = backgroundCriticalSyncRef.current.get(normalizedAccount) ?? 0;
+    if (Date.now() - lastCriticalSyncAt < BACKGROUND_CRITICAL_SYNC_INTERVAL_MS) {
       return;
     }
 
-    backgroundFreshSyncRef.current.set(normalizedAccount, Date.now());
-    void refetch();
-  }, [account, enabled, query.data, query.dataUpdatedAt, refetch]);
+    backgroundCriticalSyncRef.current.set(normalizedAccount, Date.now());
+    void refetchCritical();
+  }, [account, enabled, query.data, query.dataUpdatedAt, refetchCritical]);
+
+  useEffect(() => {
+    if (!enabled || !account || !query.data) {
+      return;
+    }
+
+    const normalizedAccount = account.toLowerCase();
+    const now = Date.now();
+    const lastFullSyncAt = backgroundFullSyncRef.current.get(normalizedAccount);
+
+    if (!lastFullSyncAt) {
+      backgroundFullSyncRef.current.set(normalizedAccount, now);
+      return;
+    }
+
+    if (now - lastFullSyncAt < BACKGROUND_FULL_SYNC_INTERVAL_MS) {
+      return;
+    }
+
+    backgroundFullSyncRef.current.set(normalizedAccount, now);
+    void refetchFull();
+  }, [account, enabled, query.data, query.dataUpdatedAt, refetchFull]);
 
   useEffect(() => {
     if (typeof window === "undefined") {

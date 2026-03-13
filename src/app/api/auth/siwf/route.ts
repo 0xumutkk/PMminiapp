@@ -1,4 +1,5 @@
 import { getRequestId } from "@/lib/security/request-context";
+import { consumeAuthNonce } from "@/lib/security/auth-nonce-store";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/security/rate-limit";
 import { logEvent } from "@/lib/observability";
 import {
@@ -6,7 +7,6 @@ import {
   clearNonceCookieHeader,
   createAuthCookieHeader,
   createMiniAppAuthToken,
-  getAuthNonceFromRequest,
   normalizeMiniAppDomain,
   parseSiwfMessage,
   resolveExpectedAuthDomain
@@ -228,11 +228,6 @@ export async function POST(request: Request) {
     return badRequest("SIWE message nonce is missing or too short", requestId, rateHeaders);
   }
 
-  const nonceFromCookie = getAuthNonceFromRequest(request);
-  if (!nonceFromCookie || nonceFromCookie !== parsedMessage.nonce) {
-    return badRequest("SIWE nonce does not match the current sign-in session", requestId, rateHeaders);
-  }
-
   const expectedDomain = resolveExpectedAuthDomain(request);
   if (!expectedDomain) {
     return badRequest("Auth domain could not be resolved", requestId, rateHeaders);
@@ -268,13 +263,18 @@ export async function POST(request: Request) {
       address: parsedMessage.address as `0x${string}`,
       domain: messageDomain,
       message: body.message,
-      nonce: nonceFromCookie,
+      nonce: parsedMessage.nonce,
       signature: body.signature as `0x${string}`,
       time: new Date()
     });
 
     if (!verified) {
       throw new Error("SIWE verification failed");
+    }
+
+    const nonceAccepted = await consumeAuthNonce(parsedMessage.nonce);
+    if (!nonceAccepted) {
+      return badRequest("SIWE nonce does not match the current sign-in session", requestId, rateHeaders);
     }
 
     const sessionMaxAgeSeconds = parseNumberEnv(["AUTH_SESSION_MAX_AGE_SECONDS"], 60 * 60 * 24 * 7);

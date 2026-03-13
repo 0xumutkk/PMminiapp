@@ -28,7 +28,7 @@ function pruneExpired(store: NonceStore, now: number) {
   }
 }
 
-async function claimAuthNonceInMemory(nonce: string, ttlMs: number) {
+async function issueAuthNonceInMemory(nonce: string, ttlMs: number) {
   const now = Date.now();
   const store = getStore();
   pruneExpired(store, now);
@@ -45,7 +45,7 @@ async function claimAuthNonceInMemory(nonce: string, ttlMs: number) {
   return true;
 }
 
-export async function claimAuthNonce(nonce: string, ttlMs: number) {
+export async function issueAuthNonce(nonce: string, ttlMs: number) {
   const redis = await getSecurityRedisClient();
   const safeTtlMs = Math.max(ttlMs, 1_000);
 
@@ -58,7 +58,30 @@ export async function claimAuthNonce(nonce: string, ttlMs: number) {
     }
   }
 
-  return claimAuthNonceInMemory(nonce, safeTtlMs);
+  return issueAuthNonceInMemory(nonce, safeTtlMs);
+}
+
+export async function consumeAuthNonce(nonce: string) {
+  const redis = await getSecurityRedisClient();
+  if (redis) {
+    try {
+      const deleted = await redis.del(`${NONCE_KEY_PREFIX}${nonce}`);
+      return deleted > 0;
+    } catch {
+      // fall back to local in-memory behavior
+    }
+  }
+
+  const now = Date.now();
+  const store = getStore();
+  pruneExpired(store, now);
+  const existing = store.get(nonce);
+  if (!existing || existing.expiresAt <= now) {
+    return false;
+  }
+
+  store.delete(nonce);
+  return true;
 }
 
 export async function releaseAuthNonce(nonce: string) {

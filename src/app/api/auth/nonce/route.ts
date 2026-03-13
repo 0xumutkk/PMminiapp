@@ -3,6 +3,7 @@ import {
   clearNonceCookieHeader,
   createNonceCookieHeader
 } from "@/lib/security/miniapp-auth";
+import { issueAuthNonce } from "@/lib/security/auth-nonce-store";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/security/rate-limit";
 
 export const runtime = "nodejs";
@@ -24,7 +25,20 @@ export async function POST(request: Request) {
     return Response.json({ error: "Too many requests" }, { status: 429, headers });
   }
 
-  const nonce = generateSiweNonce();
+  let nonce = "";
+  let issued = false;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    nonce = generateSiweNonce();
+    issued = await issueAuthNonce(nonce, NONCE_MAX_AGE_SECONDS * 1_000);
+    if (issued) {
+      break;
+    }
+  }
+
+  if (!issued || !nonce) {
+    return Response.json({ error: "Failed to issue sign-in nonce" }, { status: 500, headers });
+  }
+
   headers.append("Set-Cookie", clearNonceCookieHeader());
   headers.append("Set-Cookie", createNonceCookieHeader(nonce, NONCE_MAX_AGE_SECONDS));
 

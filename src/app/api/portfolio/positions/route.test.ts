@@ -36,6 +36,19 @@ type TestHelpers = {
   hasRenderableOnchainPositions: (
     snapshot: PortfolioPositionsSnapshot | null | undefined
   ) => boolean;
+  shouldBackfillPublicHistory: (
+    snapshot: PortfolioPositionsSnapshot | null | undefined
+  ) => boolean;
+  shouldServePublicFastPath: (
+    snapshot: PortfolioPositionsSnapshot | null | undefined,
+    forceFresh: boolean
+  ) => boolean;
+  shouldFetchCatalogForHistoryFallback: (
+    market: {
+      title: string;
+      positionIds?: string[];
+    }
+  ) => boolean;
   collectOnchainDiscoveryAddresses: (
     historyAddresses?: string[],
     ...snapshots: Array<PortfolioPositionsSnapshot | null | undefined>
@@ -96,6 +109,22 @@ function buildSnapshot(settled: TrackedPosition[]): PortfolioPositionsSnapshot {
         .toFixed(6)
         .replace(/\.?0+$/, "") || "0"
     }
+  };
+}
+
+function buildActivePosition(overrides: Partial<TrackedPosition> = {}): TrackedPosition {
+  return {
+    ...buildSettledPosition({
+      id: `${MARKET_ID}:no`,
+      side: "no",
+      status: "active",
+      claimable: false,
+      tokenBalance: "0.04",
+      marketValueUsdc: "0.04",
+      unrealizedPnlUsdc: "0",
+      realizedPnlUsdc: "0"
+    }),
+    ...overrides
   };
 }
 
@@ -274,6 +303,63 @@ test("hasRenderableOnchainPositions treats claimable-only settled snapshots as r
   assert.equal(testHelpers.hasRenderableOnchainPositions(null), false);
 });
 
+test("shouldBackfillPublicHistory detects active-only public snapshots", () => {
+  const activeOnlySnapshot: PortfolioPositionsSnapshot = {
+    ...buildSnapshot([]),
+    active: [buildActivePosition()]
+  };
+
+  assert.equal(testHelpers.shouldBackfillPublicHistory(activeOnlySnapshot), true);
+  assert.equal(testHelpers.shouldServePublicFastPath(activeOnlySnapshot, false), false);
+});
+
+test("shouldServePublicFastPath stays enabled when public snapshot already has settled rows", () => {
+  const settledSnapshot: PortfolioPositionsSnapshot = {
+    ...buildSnapshot([
+      buildSettledPosition({
+        id: `${MARKET_ID}:yes:exit`,
+        isSold: true
+      })
+    ]),
+    active: [buildActivePosition()]
+  };
+
+  assert.equal(testHelpers.shouldBackfillPublicHistory(settledSnapshot), false);
+  assert.equal(testHelpers.shouldServePublicFastPath(settledSnapshot, false), true);
+  assert.equal(testHelpers.shouldServePublicFastPath(settledSnapshot, true), false);
+});
+
+test("shouldFetchCatalogForHistoryFallback skips catalog fetch when address lookup already resolved title and position ids", () => {
+  assert.equal(
+    testHelpers.shouldFetchCatalogForHistoryFallback({
+      title: "Will Arsenal have a clean sheet against Mansfield Town on March 7?",
+      positionIds: [
+        "99544937784891846016561384630337232305250496594416516917072038551265584519395",
+        "995242299079919664167824478477597263934941250329907986599524423339694775318"
+      ]
+    }),
+    false
+  );
+
+  assert.equal(
+    testHelpers.shouldFetchCatalogForHistoryFallback({
+      title: "Market 0x5Ab8...AA94",
+      positionIds: [
+        "1",
+        "2"
+      ]
+    }),
+    true
+  );
+
+  assert.equal(
+    testHelpers.shouldFetchCatalogForHistoryFallback({
+      title: "Resolved market",
+      positionIds: []
+    }),
+    true
+  );
+});
 test("collectOnchainDiscoveryAddresses includes address-backed markets from cached and supplemental snapshots", () => {
   const historyAddress = "0x1111111111111111111111111111111111111111";
   const cachedSnapshot: PortfolioPositionsSnapshot = {

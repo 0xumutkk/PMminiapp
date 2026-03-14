@@ -43,6 +43,12 @@ type TestHelpers = {
     snapshot: PortfolioPositionsSnapshot | null | undefined,
     forceFresh: boolean
   ) => boolean;
+  shouldFetchCatalogForHistoryFallback: (
+    market: {
+      title: string;
+      positionIds?: string[];
+    }
+  ) => boolean;
   collectOnchainDiscoveryAddresses: (
     historyAddresses?: string[],
     ...snapshots: Array<PortfolioPositionsSnapshot | null | undefined>
@@ -321,6 +327,38 @@ test("shouldServePublicFastPath stays enabled when public snapshot already has s
   assert.equal(testHelpers.shouldBackfillPublicHistory(settledSnapshot), false);
   assert.equal(testHelpers.shouldServePublicFastPath(settledSnapshot, false), true);
   assert.equal(testHelpers.shouldServePublicFastPath(settledSnapshot, true), false);
+});
+
+test("shouldFetchCatalogForHistoryFallback skips catalog fetch when address lookup already resolved title and position ids", () => {
+  assert.equal(
+    testHelpers.shouldFetchCatalogForHistoryFallback({
+      title: "Will Arsenal have a clean sheet against Mansfield Town on March 7?",
+      positionIds: [
+        "99544937784891846016561384630337232305250496594416516917072038551265584519395",
+        "995242299079919664167824478477597263934941250329907986599524423339694775318"
+      ]
+    }),
+    false
+  );
+
+  assert.equal(
+    testHelpers.shouldFetchCatalogForHistoryFallback({
+      title: "Market 0x5Ab8...AA94",
+      positionIds: [
+        "1",
+        "2"
+      ]
+    }),
+    true
+  );
+
+  assert.equal(
+    testHelpers.shouldFetchCatalogForHistoryFallback({
+      title: "Resolved market",
+      positionIds: []
+    }),
+    true
+  );
 });
 
 test("collectOnchainDiscoveryAddresses includes address-backed markets from cached and supplemental snapshots", () => {

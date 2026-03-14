@@ -22,13 +22,14 @@ import * as fs from "node:fs";
 
 export const runtime = "nodejs";
 const ACTIVE_MARKET_PAGE_LIMIT = 6;
-const POSITIONS_REQUEST_BUDGET_MS = 10_000;
+const POSITIONS_REQUEST_BUDGET_MS = 30_000;
 const PUBLIC_PORTFOLIO_TIMEOUT_MS = 3_500;
-const BLOCKSCOUT_HISTORY_SNAPSHOT_TIMEOUT_MS = 2_500;
+const QUICK_HISTORY_SNAPSHOT_TIMEOUT_MS = 12_000;
+const BLOCKSCOUT_HISTORY_SNAPSHOT_TIMEOUT_MS = 8_000;
 const AMM_MARKET_DISCOVERY_TIMEOUT_MS = 2_500;
 const ONCHAIN_ENRICH_TIMEOUT_MS = 4_000;
 const LIGHT_ONCHAIN_ENRICH_TIMEOUT_MS = 3_500;
-const HISTORY_SUMMARY_TIMEOUT_MS = 2_500;
+const HISTORY_SUMMARY_TIMEOUT_MS = 6_000;
 const RECENT_HISTORY_RPC_FALLBACK_TIMEOUT_MS = 3_500;
 const HISTORY_SUMMARY_RPC_FALLBACK_TIMEOUT_MS = 2_500;
 const QUICK_HISTORY_RPC_META_LIMIT = 40;
@@ -1412,7 +1413,7 @@ async function fetchAmmMarketsForOnchain(
     }));
 
     const unresolvedEntries = fallbackEntries.filter(([_, m]) =>
-      isGenericHistoryTitle(m.title) || !hasVerifiedAmmPrice(m.yesPrice) || !hasVerifiedAmmPrice(m.noPrice)
+      shouldFetchCatalogForHistoryFallback(m)
     );
 
     if (unresolvedEntries.length > 0) {
@@ -1520,6 +1521,14 @@ function isGenericHistoryTitle(title: string | undefined) {
   }
 
   return /^Market 0x[a-f0-9]{4}\.\.\.[a-f0-9]{4}$/i.test(title.trim());
+}
+
+function shouldFetchCatalogForHistoryFallback(market: AmmMarketRef) {
+  if (isGenericHistoryTitle(market.title)) {
+    return true;
+  }
+
+  return !Array.isArray(market.positionIds) || market.positionIds.length < 2;
 }
 
 function isAddressLikeMarketId(value: string | undefined) {
@@ -2467,6 +2476,275 @@ async function fetchBlockscoutHistorySnapshot(account: `0x${string}`): Promise<P
   };
 }
 
+async function fetchQuickHistorySnapshot(account: `0x${string}`): Promise<PortfolioPositionsSnapshot | null> {
+  const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+  const historyEvents: BlockscoutHistoryEvent[] = [];
+
+  const fetchCtTransfers = async (direction: "in" | "out") => {
+    let nextPageParams: string | null = null;
+
+    for (let page = 0; page < BLOCKSCOUT_HISTORY_PAGE_LIMIT; page++) {
+      const filter = direction === "in" ? "to" : "from";
+      const baseUrl = `https://base.blockscout.com/api/v2/addresses/${account}/token-transfers?filter=${filter}&type=ERC-1155`;
+      const url = nextPageParams ? `${baseUrl}&${nextPageParams}` : baseUrl;
+
+      try {
+        const response = await fetch(url, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          // @ts-ignore
+          next: { revalidate: 0 },
+          signal: AbortSignal.timeout(10_000)
+        });
+
+        if (!response.ok) {
+          break;
+        }
+
+        const payload = (await response.json()) as {
+          items?: unknown[];
+          next_page_params?: Record<string, unknown> | null;
+        };
+        const items = Array.isArray(payload.items) ? payload.items : [];
+
+        for (const item of items) {
+          if (!item || typeof item !== "object") continue;
+          const record = item as Record<string, unknown>;
+          if (record.token_type !== "ERC-1155") continue;
+
+          const token = record.token as Record<string, unknown> | undefined;
+          if (typeof token?.address_hash !== "string" || token.address_hash.toLowerCase() !== CT_ADDRESS_LOWER) {
+            continue;
+          }
+
+          const total = record.total as Record<string, unknown> | undefined;
+          const tokenId =
+            typeof total?.token_id === "string"
+              ? total.token_id
+              : typeof total?.token_id === "number"
+                ? String(total.token_id)
+                : "";
+          const rawValue =
+            typeof total?.value === "string"
+              ? total.value
+              : typeof total?.value === "number"
+                ? String(total.value)
+                : "";
+
+          if (!tokenId || !rawValue) {
+            continue;
+          }
+
+          const timestamp = typeof record.timestamp === "string" ? record.timestamp : undefined;
+          const from = record.from as Record<string, unknown> | undefined;
+          const to = record.to as Record<string, unknown> | undefined;
+          const fromHash = typeof from?.hash === "string" ? from.hash.toLowerCase() : undefined;
+          const toHash = typeof to?.hash === "string" ? to.hash.toLowerCase() : undefined;
+
+          let contractAddress: string | undefined;
+          let action: BlockscoutHistoryEvent["action"];
+          if (direction === "in") {
+            action = "buy";
+            contractAddress =
+              fromHash && fromHash !== ZERO_ADDRESS && isAddress(fromHash) ? fromHash : undefined;
+          } else if (toHash === ZERO_ADDRESS) {
+            action = "redeem";
+          } else {
+            action = "sell";
+            contractAddress =
+              toHash && toHash !== ZERO_ADDRESS && isAddress(toHash) ? toHash : undefined;
+          }
+
+          historyEvents.push({
+            direction,
+            action,
+            contractAddress,
+            tokenAmount: normalizeRawTokenAmount(rawValue, 6),
+            tokenId,
+            timestamp
+          });
+        }
+
+        if (payload.next_page_params && typeof payload.next_page_params === "object") {
+          const params = new URLSearchParams();
+          for (const [key, value] of Object.entries(payload.next_page_params)) {
+            if (value !== null && value !== undefined) {
+              params.set(key, String(value));
+            }
+          }
+          nextPageParams = params.toString();
+        } else {
+          break;
+        }
+      } catch {
+        break;
+      }
+    }
+  };
+
+  await Promise.all([
+    fetchCtTransfers("in"),
+    fetchCtTransfers("out")
+  ]);
+
+  const historyAddresses = Array.from(
+    new Set(
+      historyEvents
+        .map((event) => event.contractAddress?.toLowerCase())
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+
+  if (historyEvents.length === 0 || historyAddresses.length === 0) {
+    return null;
+  }
+
+  const ammMarkets = await fetchAmmMarketsForOnchain(historyAddresses, false);
+  if (ammMarkets.length === 0) {
+    return null;
+  }
+
+  const marketByAddress = new Map<string, AmmMarketRef>();
+  for (const market of ammMarkets) {
+    marketByAddress.set(market.contractAddress.toLowerCase(), market);
+  }
+
+  const resolveMarketForEvent = (event: BlockscoutHistoryEvent) => {
+    if (event.contractAddress) {
+      const direct = marketByAddress.get(event.contractAddress.toLowerCase());
+      if (direct) {
+        return direct;
+      }
+    }
+
+    return (
+      ammMarkets.find((market) => resolveMarketSideFromTokenId(market, event.tokenId) !== null) ??
+      null
+    );
+  };
+
+  const buckets = new Map<string, {
+    hadBuy: boolean;
+    hadRedeem: boolean;
+    hadSell: boolean;
+    latestTimestamp?: string;
+    latestTimestampMs: number;
+    market: AmmMarketRef;
+    side: PositionSide;
+  }>();
+
+  const orderedEvents = [...historyEvents].sort(
+    (left, right) => parseTimestampMs(left.timestamp) - parseTimestampMs(right.timestamp)
+  );
+
+  for (const event of orderedEvents) {
+    const market = resolveMarketForEvent(event);
+    if (!market) {
+      continue;
+    }
+
+    const side = resolveMarketSideFromTokenId(market, event.tokenId);
+    if (!side) {
+      continue;
+    }
+
+    const key = `${market.contractAddress.toLowerCase()}:${side}`;
+    const bucket = buckets.get(key) ?? {
+      hadBuy: false,
+      hadRedeem: false,
+      hadSell: false,
+      latestTimestampMs: 0,
+      market,
+      side
+    };
+
+    bucket.market = market;
+    bucket.side = side;
+    if (event.direction === "in") {
+      bucket.hadBuy = true;
+    } else if (event.action === "redeem") {
+      bucket.hadRedeem = true;
+    } else {
+      bucket.hadSell = true;
+    }
+
+    const timestampMs = parseTimestampMs(event.timestamp);
+    if (timestampMs >= bucket.latestTimestampMs) {
+      bucket.latestTimestampMs = timestampMs;
+      bucket.latestTimestamp = event.timestamp;
+    }
+
+    buckets.set(key, bucket);
+  }
+
+  const settled: TrackedPosition[] = [];
+  for (const bucket of buckets.values()) {
+    const market = bucket.market;
+    const statusRaw = market.status?.toLowerCase() ?? "";
+    const isResolved = market.expired === true || statusRaw.includes("resolved") || statusRaw.includes("closed");
+    const winningSide =
+      market.winningOutcomeIndex === 0 ? "yes" :
+      market.winningOutcomeIndex === 1 ? "no" :
+      null;
+
+    if (bucket.hadSell || bucket.hadRedeem) {
+      const currentPrice = bucket.side === "yes" ? market.yesPrice : market.noPrice;
+      settled.push({
+        id: `${market.contractAddress}:${bucket.side}:quick-exit`,
+        marketId: market.contractAddress,
+        marketSlug: market.slug,
+        marketTitle: market.title,
+        side: bucket.side,
+        status: "settled",
+        costUsdc: "0",
+        marketValueUsdc: "0",
+        unrealizedPnlUsdc: "0",
+        realizedPnlUsdc: "0",
+        claimable: false,
+        tokenBalance: "0",
+        currentPrice: hasVerifiedAmmPrice(currentPrice) ? currentPrice : undefined,
+        hasVerifiedPricing: hasVerifiedAmmPrice(currentPrice),
+        endsAt: market.endsAt,
+        activityAt: bucket.latestTimestamp,
+        isSold: bucket.hadSell,
+        isRedeemed: bucket.hadRedeem
+      });
+      continue;
+    }
+
+    if (!bucket.hadBuy || !isResolved || winningSide === null || winningSide === bucket.side) {
+      continue;
+    }
+
+    settled.push({
+      id: `${market.contractAddress}:${bucket.side}:quick-resolved`,
+      marketId: market.contractAddress,
+      marketSlug: market.slug,
+      marketTitle: market.title,
+      side: bucket.side,
+      status: "settled",
+      costUsdc: "0",
+      marketValueUsdc: "0",
+      unrealizedPnlUsdc: "0",
+      realizedPnlUsdc: "0",
+      claimable: false,
+      tokenBalance: "0",
+      currentPrice: 0,
+      hasVerifiedPricing: true,
+      endsAt: market.endsAt,
+      activityAt: bucket.latestTimestamp
+    });
+  }
+
+  if (settled.length === 0) {
+    return null;
+  }
+
+  return sortSnapshotByStoredRecency(
+    createPortfolioSnapshot(account, [], prunePlaceholderSettledPositions(settled))
+  );
+}
+
 async function fetchReconciledBlockscoutHistorySnapshot(account: `0x${string}`) {
   const historySnapshot = await withTimeout(
     fetchBlockscoutHistorySnapshot(account),
@@ -2635,6 +2913,10 @@ function createPortfolioSnapshot(
 function prunePlaceholderSettledPositions(settled: TrackedPosition[]) {
   return settled.filter((position) => {
     if (position.claimable) {
+      return true;
+    }
+
+    if (position.activityAt) {
       return true;
     }
 
@@ -3396,12 +3678,10 @@ export async function GET(request: Request) {
     if (auth) authHeaders["Authorization"] = auth;
     if (deviceId) authHeaders["limitless-device-id"] = deviceId;
 
-    // 1. Fetch the public portfolio first. It already contains active positions,
-    // settled positions, market values and cost basis. That is sufficient for
-    // the initial profile render, so we should not block on transfer-history
-    // reconstruction unless the caller explicitly asked for a fresh deep sync or
-    // the public snapshot is empty/degraded.
-    const rawPublicPortfolio = await withRequestBudget(
+    // Keep the Limitless public portfolio API on the active-position path only.
+    // For refresh / critical requests, start chain-based history reconstruction
+    // immediately so history does not wait on the public portfolio endpoint.
+    const rawPublicPortfolioPromise = withRequestBudget(
       requestDeadlineMs,
       PUBLIC_PORTFOLIO_TIMEOUT_MS,
       "Public portfolio fetch",
@@ -3410,6 +3690,19 @@ export async function GET(request: Request) {
       console.warn(`[Positions API] Failed to fetch public portfolio for cost basis:`, err);
       return null;
     });
+    const preloadQuickHistory = forceFresh || criticalOnly;
+    const quickHistoryPromise = preloadQuickHistory
+      ? withRequestBudget(
+          requestDeadlineMs,
+          QUICK_HISTORY_SNAPSHOT_TIMEOUT_MS,
+          "Quick history snapshot",
+          () => fetchQuickHistorySnapshot(account as `0x${string}`)
+        ).catch((error) => {
+          console.warn("[Positions API] Quick history snapshot failed:", error);
+          return null;
+        })
+      : null;
+    const rawPublicPortfolio = await rawPublicPortfolioPromise;
     const hasPublicPositions = hasRenderableOnchainPositions(rawPublicPortfolio);
     const shouldBackfillSettledHistory = shouldBackfillPublicHistory(rawPublicPortfolio);
 
@@ -3422,6 +3715,47 @@ export async function GET(request: Request) {
       !hasPublicPositions ||
       shouldBackfillSettledHistory ||
       (forceFresh && rawPublicPortfolio !== null && rawPublicPortfolio.settled.length === 0);
+
+    let quickHistorySnapshot: PortfolioPositionsSnapshot | null = null;
+    if (quickHistoryPromise) {
+      quickHistorySnapshot = await quickHistoryPromise;
+    } else if (shouldAttemptBlockscoutHistoryBackfill) {
+      try {
+        quickHistorySnapshot = await withRequestBudget(
+          requestDeadlineMs,
+          QUICK_HISTORY_SNAPSHOT_TIMEOUT_MS,
+          "Quick history snapshot",
+          () => fetchQuickHistorySnapshot(account as `0x${string}`)
+        );
+      } catch (error) {
+        console.warn("[Positions API] Quick history snapshot failed:", error);
+      }
+    }
+
+    if (
+      !criticalOnly &&
+      rawPublicPortfolio &&
+      hasPublicPositions &&
+      (quickHistorySnapshot?.settled.length ?? 0) > 0
+    ) {
+      headers.set("X-Positions-Source", "public+quick-history");
+      return respondWithSnapshot(
+        mergeHistoricalSettledPositions(
+          rawPublicPortfolio,
+          account as `0x${string}`,
+          quickHistorySnapshot?.settled ?? []
+        )
+      );
+    }
+
+    if (
+      !criticalOnly &&
+      !hasPublicPositions &&
+      (quickHistorySnapshot?.settled.length ?? 0) > 0
+    ) {
+      headers.set("X-Positions-Source", "quick-history-fallback");
+      return respondWithSnapshot(quickHistorySnapshot as PortfolioPositionsSnapshot);
+    }
 
     let blockscoutHistorySnapshot: PortfolioPositionsSnapshot | null = null;
     if (shouldAttemptBlockscoutHistoryBackfill) {
@@ -3437,16 +3771,25 @@ export async function GET(request: Request) {
       }
     }
 
-    if (!criticalOnly && rawPublicPortfolio && hasPublicPositions && !forceFresh) {
+    const supplementalHistorySnapshot =
+      blockscoutHistorySnapshot && hasRenderableOnchainPositions(blockscoutHistorySnapshot)
+        ? blockscoutHistorySnapshot
+        : quickHistorySnapshot;
+
+    if (!criticalOnly && rawPublicPortfolio && hasPublicPositions) {
       const fastSnapshot = mergeHistoricalSettledPositions(
         rawPublicPortfolio,
         account as `0x${string}`,
-        blockscoutHistorySnapshot?.settled ?? []
+        supplementalHistorySnapshot?.settled ?? []
       );
 
       headers.set(
         "X-Positions-Source",
-        (blockscoutHistorySnapshot?.settled.length ?? 0) > 0 ? "public+blockscout" : "public-fast-path"
+        (blockscoutHistorySnapshot?.settled.length ?? 0) > 0
+          ? "public+blockscout"
+          : (quickHistorySnapshot?.settled.length ?? 0) > 0
+            ? "public+quick-history"
+            : "public-fast-path"
       );
       return respondWithSnapshot(fastSnapshot);
     }
@@ -3463,7 +3806,7 @@ export async function GET(request: Request) {
               const lightDiscoveryAddresses = collectOnchainDiscoveryAddresses(
                 cachedDiscoveryAddresses,
                 cachedSnapshot,
-                blockscoutHistorySnapshot
+                supplementalHistorySnapshot
               );
               const lightMarkets = await fetchAmmMarketsForOnchain(
                 lightDiscoveryAddresses,
@@ -3479,7 +3822,7 @@ export async function GET(request: Request) {
         const stabilizedLightSnapshot = mergeHistoricalSettledPositions(
           lightSnapshot,
           account as `0x${string}`,
-          blockscoutHistorySnapshot?.settled ?? []
+          supplementalHistorySnapshot?.settled ?? []
         );
 
         if (hasRenderableOnchainPositions(stabilizedLightSnapshot)) {
@@ -3495,7 +3838,7 @@ export async function GET(request: Request) {
         cachedDiscoveryAddresses,
         cachedSnapshot,
         lightOnchainSnapshot,
-        blockscoutHistorySnapshot
+        supplementalHistorySnapshot
       );
       const criticalIncludeCatalog = criticalDiscoveryAddresses.length === 0;
       const criticalMarkets = await withRequestBudget(
@@ -3525,7 +3868,7 @@ export async function GET(request: Request) {
       const criticalPublicSnapshot = mergeHistoricalSettledPositions(
         enrichPublicPortfolioSnapshotWithMarketPrices(rawPublicPortfolio, criticalMarkets),
         account as `0x${string}`,
-        blockscoutHistorySnapshot?.settled ?? []
+        supplementalHistorySnapshot?.settled ?? []
       );
       const criticalBaseSnapshot = criticalOnchainSnapshot
         ? mergePortfolioSnapshots(
@@ -3564,7 +3907,7 @@ export async function GET(request: Request) {
     const discoveryAddresses = collectOnchainDiscoveryAddresses(
       rawHistorySummary.fpmmAddresses,
       cachedSnapshot,
-      blockscoutHistorySnapshot,
+      supplementalHistorySnapshot,
       lightOnchainSnapshot
     );
     const shouldFetchOnchain = !hasPublicPositions || discoveryAddresses.length > 0;
@@ -3585,7 +3928,7 @@ export async function GET(request: Request) {
     const historicalSettled = combineHistoricalSettledSources(
       account as `0x${string}`,
       buildHistoricalSettledPositions(historySummary, ammMarkets, publicPortfolio),
-      blockscoutHistorySnapshot?.settled ?? []
+      supplementalHistorySnapshot?.settled ?? []
     );
 
     // 3. Create cost basis map keyed as `${marketId}:${side}`.
@@ -3730,6 +4073,7 @@ declare global {
         hasRenderableOnchainPositions: typeof hasRenderableOnchainPositions;
         shouldBackfillPublicHistory: typeof shouldBackfillPublicHistory;
         shouldServePublicFastPath: typeof shouldServePublicFastPath;
+        shouldFetchCatalogForHistoryFallback: typeof shouldFetchCatalogForHistoryFallback;
         collectOnchainDiscoveryAddresses: typeof collectOnchainDiscoveryAddresses;
       }
     | undefined;
@@ -3745,6 +4089,7 @@ if (process.env.NODE_ENV === "test") {
     hasRenderableOnchainPositions,
     shouldBackfillPublicHistory,
     shouldServePublicFastPath,
+    shouldFetchCatalogForHistoryFallback,
     collectOnchainDiscoveryAddresses
   };
 }
